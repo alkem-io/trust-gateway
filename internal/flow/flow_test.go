@@ -245,6 +245,24 @@ func TestEvidenceMarshalFailureFailsSession(t *testing.T) {
 	}
 }
 
+func TestFailedEvidenceMarshalFailureFailsSession(t *testing.T) {
+	e, _ := newEngine([]Result{
+		redirect("https://cb/a", "state"),
+		{Handle: []byte("h"), Step: map[string]any{
+			"kind": "failed", "evidence": make(chan int),
+		}},
+	})
+	_, _ = e.Begin("corr", []byte("%PDF"), "B-B", "", nil)
+	sess, _ := e.Store.GetByState("state")
+	if _, _, _, err := e.Complete(context.Background(), sess, "code", "state"); err == nil {
+		t.Fatal("Complete() silently accepted failed evidence that cannot be serialized")
+	}
+	view, err := e.Store.ViewByID("corr")
+	if err != nil || view.Status != session.StatusFailed || view.Reason != reasonResumeError || len(view.Evidence) != 0 {
+		t.Fatalf("failed session = %+v, %v", view, err)
+	}
+}
+
 func TestOptionsValidateRequiresCompleteExpectedSigner(t *testing.T) {
 	for _, options := range []*Options{
 		{ExpectedSignerMatchOn: "certificate_serial_number"},

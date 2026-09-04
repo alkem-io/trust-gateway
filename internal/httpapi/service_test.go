@@ -196,6 +196,7 @@ func TestFullFlowOverHTTP(t *testing.T) {
 	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"completed"`) {
 		t.Fatalf("status: %d %s", rec.Code, rec.Body)
 	}
+	requireNoStore(t, rec)
 }
 
 func TestGatewayCallbackOwnsBothOAuthLegsAndReturnsOpaqueState(t *testing.T) { //nolint:gocyclo // The assertions pin one end-to-end callback contract.
@@ -449,6 +450,7 @@ func TestClientStateNeverLogged(t *testing.T) {
 	svc.Profile.ReturnURL = mustParseURL(t, "https://alkemio.example/complete")
 	var logs strings.Builder
 	svc.Log = slog.New(slog.NewTextHandler(&logs, nil))
+	svc.Engine.Log = svc.Log
 	h := svc.Handler()
 	_ = do(t, h, http.MethodPost, "/v1/sign/start", `{"clientState":"`+opaque+`"}`, "")
 	_ = do(t, h, http.MethodGet, "/oauth/cleverbase/callback?code=c1&state=s1", "", "")
@@ -562,9 +564,13 @@ func TestResultNotCompleted(t *testing.T) {
 	_ = json.Unmarshal(rec.Body.Bytes(), &sr)
 	if rec := do(t, h, "GET", "/v1/sign/result?correlationId="+sr["correlationId"], "", ""); rec.Code != http.StatusConflict {
 		t.Fatalf("result of a non-completed session should 409, got %d", rec.Code)
+	} else {
+		requireNoStore(t, rec)
 	}
 	if rec := do(t, h, "GET", "/v1/sign/result?correlationId=nope", "", ""); rec.Code != http.StatusNotFound {
 		t.Fatalf("result of unknown id should 404, got %d", rec.Code)
+	} else {
+		requireNoStore(t, rec)
 	}
 }
 
@@ -602,6 +608,8 @@ func TestStatusAndResultErrors(t *testing.T) {
 	h := newService(happySteps(), false).Handler() // auth disabled
 	if rec := do(t, h, "GET", "/v1/sign/status?correlationId=nope", "", ""); rec.Code != http.StatusNotFound {
 		t.Fatalf("unknown status should 404, got %d", rec.Code)
+	} else {
+		requireNoStore(t, rec)
 	}
 	if rec := do(t, h, "POST", "/v1/sign/complete", `{"code":"c","state":"nope"}`, ""); rec.Code != http.StatusBadRequest {
 		t.Fatalf("unknown state should 400, got %d", rec.Code)

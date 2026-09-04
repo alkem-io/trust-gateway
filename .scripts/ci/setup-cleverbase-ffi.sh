@@ -65,7 +65,7 @@ verify_sha256() {
 mkdir -p "${download_dir}"
 if [[ ! -f "${archive}" ]]; then
   download="${archive}.tmp.$$"
-  curl --fail --location --silent --show-error --proto '=https' --retry 3 \
+  curl --fail --location --silent --show-error --proto '=https' --proto-redir '=https' --retry 3 \
     --output "${download}" "${release_base}/${asset}"
   mv "${download}" "${archive}"
   download=""

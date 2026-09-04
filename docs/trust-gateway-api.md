@@ -8,6 +8,11 @@ Errors have the shape `{ "error": "<code>", "message": "<safe text>" }`. A `corr
 opaque gateway identifier; SDK handles, access tokens, authorization codes, and OAuth state never
 leave the gateway.
 
+## Contract tightening
+
+When `expectedSigner` is present, both `matchOn` and `value` are required. The SDK reference service
+previously accepted `value` without `matchOn`; the gateway rejects either partial form with `400`.
+
 ## `POST /v1/sign/start`
 
 Starts a signing journey.
@@ -88,7 +93,7 @@ of these reason codes:
 - gateway failures: `upstream_error`, `resume_error`, `session_expired`;
 - defensive fallback: `unknown`.
 
-Unknown identifiers return `404`.
+Responses include `Cache-Control: no-store`, including `404` for an unknown identifier.
 
 ## `GET /v1/sign/result?correlationId=…`
 
@@ -97,8 +102,8 @@ base64-encoded JSON evidence record. Its `signer` object is the authoritative si
 contract and contains `serial_number`, `common_name`, optional `given_name` and `surname`, and the
 RFC 4514 `raw_subject`. The certificate chain is not duplicated into the header; it is embedded in
 the PDF's CMS. Repeated authenticated reads return the same PDF and evidence until session eviction;
-result retrieval is not consuming. Successful responses include `Cache-Control: no-store`. Unknown
-identifiers return `404`, and a known non-completed journey returns `409`.
+result retrieval is not consuming. All responses include `Cache-Control: no-store`, including `404`
+for an unknown identifier and `409` for a known non-completed journey.
 
 ## `GET /healthz` and `GET /readyz`
 

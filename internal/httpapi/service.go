@@ -273,13 +273,7 @@ func (s *Service) handleOAuthCallback(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, result.RedirectURL, http.StatusFound)
 		return
 	}
-	returnURL, err := s.applicationReturnURL(result)
-	if err != nil {
-		s.log().Error("build application return URL failed", "correlation_id", result.CorrelationID, "err", err.Error())
-		writeErr(w, http.StatusInternalServerError, "internal_error", "internal server error")
-		return
-	}
-	http.Redirect(w, r, returnURL, http.StatusFound)
+	http.Redirect(w, r, s.applicationReturnURL(result), http.StatusFound)
 }
 
 func returnsToApplication(result completeResult, err error) bool {
@@ -342,16 +336,13 @@ func (s *Service) logCompleteError(err error, correlationID string, conflict boo
 	s.log().Error("resume failed", "correlation_id", correlationID, "err", err.Error())
 }
 
-func (s *Service) applicationReturnURL(result completeResult) (string, error) {
-	if s.Profile.ReturnURL == nil {
-		return "", errors.New("TRUST_GATEWAY_RETURN_URL is not configured")
-	}
+func (s *Service) applicationReturnURL(result completeResult) string {
 	parsed := *s.Profile.ReturnURL
 	parsed.RawQuery = url.Values{
 		"clientState":   {result.ClientState},
 		"correlationId": {result.CorrelationID},
 	}.Encode()
-	return parsed.String(), nil
+	return parsed.String()
 }
 
 // classifyCompleteError maps an Engine.Complete/CompleteError failure to its HTTP response. A
@@ -370,6 +361,7 @@ func classifyCompleteError(err error) (code int, errCode, msg string, conflict b
 }
 
 func (s *Service) handleStatus(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
 	corr := r.URL.Query().Get("correlationId")
 	v, err := s.Store.ViewByID(corr) // race-free snapshot (the flow engine may be writing concurrently)
 	if err != nil {
@@ -385,6 +377,7 @@ func (s *Service) handleStatus(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Service) handleResult(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
 	corr := r.URL.Query().Get("correlationId")
 	v, err := s.Store.ViewByID(corr)
 	if err != nil {
@@ -398,7 +391,6 @@ func (s *Service) handleResult(w http.ResponseWriter, r *http.Request) {
 	if len(v.Evidence) > 0 {
 		w.Header().Set("X-Signature-Evidence", base64.StdEncoding.EncodeToString(v.Evidence))
 	}
-	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("content-type", "application/pdf")
 	w.WriteHeader(http.StatusOK)
 	// The body is the SDK-produced signed PDF served as application/pdf (not HTML); no XSS surface.
