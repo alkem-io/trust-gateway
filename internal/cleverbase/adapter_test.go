@@ -4,7 +4,10 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
+
+	bindings "github.com/alkem-io/cleverbase-sdk/bindings/go"
 
 	"github.com/alkem-io/trust-gateway/internal/config"
 	"github.com/alkem-io/trust-gateway/internal/flow"
@@ -122,5 +125,35 @@ func TestAdapterRejectsIncompleteExpectedSigner(t *testing.T) {
 		if _, err := a.Begin(sample, "B-B", options); err == nil {
 			t.Fatalf("Begin() accepted incomplete expected signer: %+v", options)
 		}
+	}
+}
+
+func TestToBindingOptions(t *testing.T) {
+	tests := []struct {
+		name  string
+		input *flow.Options
+		want  *bindings.RequestOptions
+	}{
+		{name: "nil", input: nil, want: nil},
+		{name: "empty", input: &flow.Options{}, want: nil},
+		{
+			name: "expected signer",
+			input: &flow.Options{
+				ExpectedSignerMatchOn: "certificate_serial_number",
+				ExpectedSignerValue:   "PNONL-123",
+			},
+			want: &bindings.RequestOptions{ExpectedSigner: &bindings.ExpectedSigner{
+				MatchOn: "certificate_serial_number",
+				Value:   "PNONL-123",
+			}},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := toBindingOptions(tt.input); !reflect.DeepEqual(got, tt.want) {
+				t.Fatalf("toBindingOptions() = %#v, want %#v", got, tt.want)
+			}
+		})
 	}
 }

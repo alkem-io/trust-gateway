@@ -55,23 +55,26 @@ func toResult(s *bindings.Session) flow.Result {
 	return flow.Result{Handle: []byte(s.Handle), Step: s.Step}
 }
 
+func toBindingOptions(opts *flow.Options) *bindings.RequestOptions {
+	if opts == nil || opts.ExpectedSignerValue == "" {
+		return nil
+	}
+	return &bindings.RequestOptions{ExpectedSigner: &bindings.ExpectedSigner{
+		MatchOn: opts.ExpectedSignerMatchOn,
+		Value:   opts.ExpectedSignerValue,
+	}}
+}
+
 // Begin starts a signing session.
 func (a *Adapter) Begin(document []byte, conformance string, opts *flow.Options) (flow.Result, error) {
 	if err := opts.Validate(); err != nil {
 		return flow.Result{}, err
 	}
-	var bopts *bindings.RequestOptions
-	if opts != nil && opts.ExpectedSignerValue != "" {
-		bopts = &bindings.RequestOptions{ExpectedSigner: &bindings.ExpectedSigner{
-			MatchOn: opts.ExpectedSignerMatchOn,
-			Value:   opts.ExpectedSignerValue,
-		}}
-	}
 	ent, err := entropy()
 	if err != nil {
 		return flow.Result{}, err
 	}
-	s, err := bindings.BeginSigning(document, a.cfg, conformance, bopts, now(), ent)
+	s, err := bindings.BeginSigning(document, a.cfg, conformance, toBindingOptions(opts), now(), ent)
 	if err != nil {
 		return flow.Result{}, err
 	}
