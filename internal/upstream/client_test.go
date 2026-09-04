@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -24,6 +25,17 @@ func TestRewrite(t *testing.T) {
 	// Unparseable input → returned unchanged.
 	if got := c.Rewrite("://nope"); got != "://nope" {
 		t.Fatalf("bad-input rewrite = %q", got)
+	}
+}
+
+func TestDoRejectsOversizedResponse(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, strings.Repeat("x", maxResponseBytes+1))
+	}))
+	defer srv.Close()
+
+	if _, _, err := New("").Do(context.Background(), http.MethodGet, srv.URL, nil, nil); err == nil {
+		t.Fatal("Do() accepted an oversized upstream response")
 	}
 }
 

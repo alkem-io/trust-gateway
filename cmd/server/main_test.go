@@ -49,17 +49,29 @@ func fixtureRuntime(t *testing.T) {
 	t.Setenv("TRUST_GATEWAY_LISTEN", "127.0.0.1:0")
 }
 
-func reserveAddress(t *testing.T) string {
+func captureListenAddress(t *testing.T) <-chan string {
 	t.Helper()
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("reserve address: %v", err)
-	}
-	address := listener.Addr().String()
-	if err := listener.Close(); err != nil {
-		t.Fatalf("release address: %v", err)
+	resetRuntimeHooks(t)
+	address := make(chan string, 1)
+	listenTCP = func(network, listenAddress string) (net.Listener, error) {
+		listener, err := net.Listen(network, listenAddress)
+		if err == nil {
+			address <- listener.Addr().String()
+		}
+		return listener, err
 	}
 	return address
+}
+
+func waitListenAddress(t *testing.T, address <-chan string) string {
+	t.Helper()
+	select {
+	case actual := <-address:
+		return actual
+	case <-time.After(5 * time.Second):
+		t.Fatal("gateway did not bind a listener")
+		return ""
+	}
 }
 
 func waitReady(t *testing.T, address string) {
@@ -104,12 +116,11 @@ func TestRunRejectsInvalidListenAddress(t *testing.T) {
 
 func TestRunShutsDownWhenContextIsCanceled(t *testing.T) {
 	fixtureRuntime(t)
-	address := reserveAddress(t)
-	t.Setenv("TRUST_GATEWAY_LISTEN", address)
+	address := captureListenAddress(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() { done <- run(ctx, slog.New(slog.NewTextHandler(io.Discard, nil))) }()
-	waitReady(t, address)
+	waitReady(t, waitListenAddress(t, address))
 	cancel()
 
 	select {
@@ -133,13 +144,12 @@ func TestRunWithAlreadyCanceledContext(t *testing.T) {
 
 func TestRunMainRunsUntilSignal(t *testing.T) {
 	fixtureRuntime(t)
-	address := reserveAddress(t)
-	t.Setenv("TRUST_GATEWAY_LISTEN", address)
+	address := captureListenAddress(t)
 	done := make(chan int, 1)
 	go func() {
 		done <- runMain()
 	}()
-	waitReady(t, address)
+	waitReady(t, waitListenAddress(t, address))
 	if err := syscall.Kill(os.Getpid(), syscall.SIGTERM); err != nil {
 		t.Fatalf("send SIGTERM: %v", err)
 	}

@@ -121,6 +121,13 @@ func do(t *testing.T, h http.Handler, method, target, body, key string) *httptes
 	return rec
 }
 
+func requireNoStore(t *testing.T, rec *httptest.ResponseRecorder) {
+	t.Helper()
+	if value := rec.Header().Get("Cache-Control"); value != "no-store" {
+		t.Fatalf("Cache-Control = %q", value)
+	}
+}
+
 func TestAuthRequiredAndHealthOpen(t *testing.T) {
 	h := newService(happySteps(), true).Handler()
 	if rec := do(t, h, "POST", "/v1/sign/start", "{}", ""); rec.Code != http.StatusUnauthorized {
@@ -135,7 +142,9 @@ func TestAuthRequiredAndHealthOpen(t *testing.T) {
 }
 
 func TestGatewayCallbackIsPublicAndRequiresState(t *testing.T) {
-	h := newService(happySteps(), true).Handler()
+	svc := newService(happySteps(), true)
+	svc.Profile.ReturnURL = mustParseURL(t, "https://alkemio.example/complete")
+	h := svc.Handler()
 	rec := do(t, h, http.MethodGet, "/oauth/cleverbase/callback?code=c", "", "")
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("public callback with missing state should 400 without an API key, got %d", rec.Code)
@@ -181,6 +190,7 @@ func TestFullFlowOverHTTP(t *testing.T) {
 	if rec.Header().Get("X-Signature-Evidence") == "" {
 		t.Fatal("missing evidence header")
 	}
+	requireNoStore(t, rec)
 	// Status reports completed.
 	rec = do(t, h, "GET", "/v1/sign/status?correlationId="+corr, "", "test-key")
 	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"completed"`) {
@@ -377,23 +387,23 @@ func TestGatewayCallbackReturnsAfterInternalResumeFailure(t *testing.T) {
 	}
 }
 
-func TestGatewayCallbackFailsClosedWithoutConfiguredReturn(t *testing.T) {
+func TestGatewayCallbackIsNotRegisteredWithoutConfiguredReturn(t *testing.T) {
 	svc := newService(happySteps(), false)
 	h := svc.Handler()
-	_ = do(t, h, http.MethodPost, "/v1/sign/start", `{}`, "")
-	_ = do(t, h, http.MethodGet, "/oauth/cleverbase/callback?code=c1&state=s1", "", "")
-	terminal := do(t, h, http.MethodGet, "/oauth/cleverbase/callback?code=c2&state=s2", "", "")
-	if terminal.Code != http.StatusInternalServerError {
-		t.Fatalf("terminal callback without TRUST_GATEWAY_RETURN_URL should 500, got %d", terminal.Code)
+	callback := do(t, h, http.MethodGet, "/oauth/cleverbase/callback?code=c1&state=s1", "", "")
+	if callback.Code != http.StatusNotFound {
+		t.Fatalf("callback without TRUST_GATEWAY_RETURN_URL should not be registered, got %d", callback.Code)
 	}
 }
 
 func TestWriteCompleteErrorLogsConflictAsClientCondition(t *testing.T) {
 	svc := newService(happySteps(), false)
 	var logs strings.Builder
-	svc.Log = slog.New(slog.NewTextHandler(&logs, nil))
+	logger := slog.New(slog.NewTextHandler(&logs, nil))
+	svc.Log = logger
+	svc.Engine.Log = logger
 	rec := httptest.NewRecorder()
-	svc.writeCompleteError(rec, session.ErrResuming)
+	svc.writeCompleteError(rec, session.ErrResuming, "corr")
 	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), errCodeAlreadyProcessing) {
 		t.Fatalf("duplicate completion = %d %s", rec.Code, rec.Body)
 	}
@@ -507,6 +517,19 @@ func TestStartDefaultsAndExpectedSigner(t *testing.T) {
 	body := `{"document":"JVBERg==","expectedSigner":{"matchOn":"certificate_serial_number","value":"PNONL-1"}}`
 	if rec := do(t, h, "POST", "/v1/sign/start", body, ""); rec.Code != http.StatusOK {
 		t.Fatalf("start with options: %d %s", rec.Code, rec.Body)
+	}
+}
+
+func TestStartRejectsIncompleteExpectedSigner(t *testing.T) {
+	h := newService(happySteps(), false).Handler()
+	for _, body := range []string{
+		`{"expectedSigner":{"matchOn":"certificate_serial_number"}}`,
+		`{"expectedSigner":{"value":"PNONL-1"}}`,
+	} {
+		rec := do(t, h, http.MethodPost, "/v1/sign/start", body, "")
+		if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "expectedSigner") {
+			t.Fatalf("incomplete expectedSigner should 400: %d %s", rec.Code, rec.Body)
+		}
 	}
 }
 

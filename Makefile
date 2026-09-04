@@ -7,7 +7,7 @@ COVERAGE_MIN := 95
 
 define with-native
 	lib_dir="$$(.scripts/ci/setup-cleverbase-ffi.sh)" && \
-	CGO_LDFLAGS="$${CGO_LDFLAGS:+$${CGO_LDFLAGS} }-L$${lib_dir}" $(1)
+	CGO_ENABLED=1 CGO_LDFLAGS="$${CGO_LDFLAGS:+$${CGO_LDFLAGS} }-L$${lib_dir}" $(1)
 endef
 
 build:
@@ -18,11 +18,18 @@ docker:
 	docker build -t alkemio/trust-gateway:latest .
 
 test:
-	$(call with-native,$(GO) test $(GOFLAGS) -coverprofile=coverage.out -covermode=atomic ./...)
-	@total="$$( $(GO) tool cover -func=coverage.out | awk '/^total:/ {gsub(/%/, "", $$3); print $$3}' )"; \
-		echo "coverage: $${total}%"; \
-		awk "BEGIN { exit !($${total} >= $(COVERAGE_MIN)) }" || \
-		{ echo "coverage $${total}% is below $(COVERAGE_MIN)%"; exit 1; }
+	@output="$$( $(call with-native,$(GO) test $(GOFLAGS) -coverprofile=coverage.out -covermode=atomic ./...) 2>&1 )" || \
+		{ status=$$?; printf '%s\n' "$${output}"; exit $$status; }; \
+	printf '%s\n' "$${output}"; \
+	failures="$$(printf '%s\n' "$${output}" | awk -v min=$(COVERAGE_MIN) ' \
+		$$1 == "?" && $$0 ~ /\[no test files\]/ { print $$2 ": no test coverage" } \
+		{ for (i = 1; i <= NF; i++) if ($$i == "coverage:") { pct = $$(i + 1); gsub(/%/, "", pct); if (pct + 0 < min) print $$2 ": " pct "%" } }')"; \
+	if [ -n "$${failures}" ]; then \
+		printf 'package coverage below $(COVERAGE_MIN)%%:\n%s\n' "$${failures}"; \
+		exit 1; \
+	fi; \
+	total="$$( $(GO) tool cover -func=coverage.out | awk '/^total:/ {gsub(/%/, "", $$3); print $$3}' )"; \
+	printf 'total coverage: %s%%\n' "$${total}"
 
 lint:
 	$(call with-native,golangci-lint run)

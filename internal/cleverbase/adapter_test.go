@@ -39,10 +39,10 @@ func TestEntropyFailureFailsEveryEntryPoint(t *testing.T) {
 
 // TestAdapterBeginAndResumeGlue exercises the cgo adapter: a real begin (which produces the service
 // authorization redirect) plus the resume wrappers. The resume results are not asserted — the point
-// is to cover the thin glue that converts binding sessions to flow.Result. The full signing flow is
-// validated by the credential-free E2E.
+// is to cover the thin glue that converts binding sessions to flow.Result. The black-box E2E added
+// in the next delivery slice will validate the full journey against the published mock image.
 func TestAdapterBeginAndResumeGlue(t *testing.T) { //nolint:gocyclo // One linear adapter journey covers every FFI entry point.
-	sample, err := os.ReadFile(filepath.Join("..", "..", "cmd", "server", "sample.pdf"))
+	sample, err := os.ReadFile(filepath.Join("testdata", "sample.pdf"))
 	if err != nil {
 		t.Fatalf("read sample: %v", err)
 	}
@@ -103,5 +103,24 @@ func TestAdapterBeginAndResumeGlue(t *testing.T) { //nolint:gocyclo // One linea
 	}
 	if _, err := a.ResumeRedirectError(garbage, "x", "y"); err == nil {
 		t.Fatal("resume redirect error with garbage handle should error")
+	}
+}
+
+func TestAdapterRejectsIncompleteExpectedSigner(t *testing.T) {
+	sample, err := os.ReadFile(filepath.Join("testdata", "sample.pdf"))
+	if err != nil {
+		t.Fatalf("read sample: %v", err)
+	}
+	a := New(&config.Profile{
+		Environment: "acceptance", CSCAPI: "v1_rsa", ClientID: "client", ClientSecret: "secret",
+		RedirectURI: "http://app/cb",
+	})
+	for _, options := range []*flow.Options{
+		{ExpectedSignerMatchOn: "certificate_serial_number"},
+		{ExpectedSignerValue: "PNONL-123"},
+	} {
+		if _, err := a.Begin(sample, "B-B", options); err == nil {
+			t.Fatalf("Begin() accepted incomplete expected signer: %+v", options)
+		}
 	}
 }

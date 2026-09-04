@@ -91,6 +91,8 @@ func TestLoadRejectsInvalidModeAndRequestDefaults(t *testing.T) {
 		{"environment", func(env map[string]string) { env["TRUST_GATEWAY_ENV"] = "sandbox" }, "TRUST_GATEWAY_ENV"},
 		{"CSC API", func(env map[string]string) { env["TRUST_GATEWAY_CSC_API"] = "v3" }, "TRUST_GATEWAY_CSC_API"},
 		{"ttl", func(env map[string]string) { env["TRUST_GATEWAY_SESSION_TTL"] = "soon" }, "TRUST_GATEWAY_SESSION_TTL"},
+		{"zero ttl", func(env map[string]string) { env["TRUST_GATEWAY_SESSION_TTL"] = "0s" }, "TRUST_GATEWAY_SESSION_TTL"},
+		{"negative ttl", func(env map[string]string) { env["TRUST_GATEWAY_SESSION_TTL"] = "-1s" }, "TRUST_GATEWAY_SESSION_TTL"},
 		{"conformance", func(env map[string]string) { env["TRUST_GATEWAY_DEFAULT_CONFORMANCE"] = "B-X" }, "TRUST_GATEWAY_DEFAULT_CONFORMANCE"},
 	}
 	for _, test := range tests {

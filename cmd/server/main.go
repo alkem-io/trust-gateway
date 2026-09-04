@@ -1,5 +1,5 @@
-// Command server runs the signing gateway: it embeds the Cleverbase SDK (via the Go binding)
-// and serves the REST API that the no-crypto web frontend drives. See specs/002-reference-integration.
+// Command server runs the signing gateway: it embeds the Cleverbase SDK (via the Go binding) and
+// serves the REST API defined in docs/trust-gateway-api.md.
 package main
 
 import (

@@ -1,6 +1,6 @@
 // Package cleverbase adapts the cgo Go binding to the flow.SDK interface (so the flow package stays
-// cgo-free and unit-testable). It re-implements no protocol/crypto — all of that lives in the Rust
-// core (Constitution III).
+// cgo-free and unit-testable). It re-implements no protocol or crypto; all of that remains in the
+// released SDK binding. See docs/trust-gateway-api.md for the gateway boundary.
 package cleverbase
 
 import (
@@ -57,6 +57,9 @@ func toResult(s *bindings.Session) flow.Result {
 
 // Begin starts a signing session.
 func (a *Adapter) Begin(document []byte, conformance string, opts *flow.Options) (flow.Result, error) {
+	if err := opts.Validate(); err != nil {
+		return flow.Result{}, err
+	}
 	var bopts *bindings.RequestOptions
 	if opts != nil && opts.ExpectedSignerValue != "" {
 		bopts = &bindings.RequestOptions{ExpectedSigner: &bindings.ExpectedSigner{

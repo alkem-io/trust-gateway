@@ -24,6 +24,18 @@ type Options struct {
 	ExpectedSignerValue   string
 }
 
+// Validate rejects a partially specified signer identity while accepting either a complete pair or
+// no expected signer. Keeping the pair rule here gives HTTP and binding callers one source of truth.
+func (options *Options) Validate() error {
+	if options == nil {
+		return nil
+	}
+	if (options.ExpectedSignerMatchOn == "") != (options.ExpectedSignerValue == "") {
+		return errors.New("expectedSigner requires both matchOn and value")
+	}
+	return nil
+}
+
 // Result is one SDK step: the updated opaque handle and the decoded Step map.
 type Result struct {
 	Handle []byte
@@ -67,9 +79,8 @@ const outcomeDeclined = "declined"
 // Service-operational failure reasons this engine emits on a `failed` status, alongside the SDK's
 // SigningOutcome failure codes (passed through verbatim from the evidence `outcome`). These are the
 // single authoritative spelling for the snake_case wire codes; they MUST stay in sync with the
-// `failed` reason set documented in specs/002-reference-integration/contracts/trust-gateway-api.md
-// (the authoritative API definition). The session store emits one further code, "session_expired",
-// on TTL expiry (see internal/session/store.go).
+// `failed` reason set in docs/trust-gateway-api.md. The session store emits one further code,
+// "session_expired", on TTL expiry (see internal/session/store.go).
 const (
 	reasonUpstreamError = "upstream_error" // an upstream HTTP call failed
 	reasonResumeError   = "resume_error"   // the SDK could not advance the state machine
@@ -130,13 +141,14 @@ func (e *Engine) drive(ctx context.Context, s *session.Session, res Result) (sta
 			}
 			e.Store.SetState(s, state)
 			e.Store.Update(s, func() { s.Status = session.StatusAuthorizing })
-			e.Log.Info("transition.redirect", "state", redactState(state))
+			e.Log.Info("transition.redirect", "correlation_id", s.CorrelationID)
 			return session.StatusAuthorizing, e.rewriteRedirect(rawURL), "", nil
 		case stepKindDone:
 			pdf, evidence, perr := stepDone(res.Step)
 			if perr != nil {
 				e.fail(s, session.StatusFailed, reasonResumeError, nil)
-				return "", "", "", fmt.Errorf("malformed done step: %w", perr)
+				e.Log.Error("transition.done_invalid", "correlation_id", s.CorrelationID)
+				return session.StatusFailed, "", reasonResumeError, fmt.Errorf("malformed done step: %w", perr)
 			}
 			e.Store.Update(s, func() {
 				s.Status = session.StatusCompleted
@@ -148,7 +160,13 @@ func (e *Engine) drive(ctx context.Context, s *session.Session, res Result) (sta
 			return session.StatusCompleted, "", "", nil
 		case stepKindFailed:
 			failStatus, failReason := mapFailed(res.Step)
-			e.fail(s, failStatus, failReason, stepEvidence(res.Step))
+			evidence, evidenceErr := stepEvidence(res.Step)
+			if evidenceErr != nil {
+				e.fail(s, session.StatusFailed, reasonResumeError, nil)
+				e.Log.Error("transition.failed_invalid", "correlation_id", s.CorrelationID)
+				return session.StatusFailed, "", reasonResumeError, fmt.Errorf("malformed failed step: %w", evidenceErr)
+			}
+			e.fail(s, failStatus, failReason, evidence)
 			e.Log.Info("transition.failed", "reason", failReason)
 			return failStatus, "", failReason, nil
 		default:
@@ -308,19 +326,23 @@ func stepDone(step map[string]any) (pdf, evidence []byte, err error) {
 	if len(pdf) == 0 {
 		return nil, nil, errors.New("done step missing signed pdf")
 	}
-	return pdf, stepEvidence(step), nil
+	evidence, err = stepEvidence(step)
+	if err != nil {
+		return nil, nil, fmt.Errorf("serialize evidence: %w", err)
+	}
+	return pdf, evidence, nil
 }
 
-func stepEvidence(step map[string]any) []byte {
+func stepEvidence(step map[string]any) ([]byte, error) {
 	ev, ok := step["evidence"]
 	if !ok {
-		return nil
+		return nil, nil
 	}
 	b, err := json.Marshal(ev)
 	if err != nil {
-		return nil
+		return nil, fmt.Errorf("serialize evidence: %w", err)
 	}
-	return b
+	return b, nil
 }
 
 func mapFailed(step map[string]any) (session.Status, string) {
@@ -345,12 +367,4 @@ func redact(rawURL string) string {
 		return "(unparseable)"
 	}
 	return u.Scheme + "://" + u.Host + u.Path
-}
-
-// redactState keeps only a short prefix of the CSRF state for correlation in logs.
-func redactState(state string) string {
-	if len(state) > 6 {
-		return state[:6] + "…"
-	}
-	return state
 }

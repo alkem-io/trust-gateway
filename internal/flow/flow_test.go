@@ -209,12 +209,65 @@ func TestBeginWithExpectedSignerOption(t *testing.T) {
 	}
 }
 
+func TestConsumeDeterministicallyMapsBusyAndTerminal(t *testing.T) {
+	e, _ := newEngine(nil)
+	sess := e.Store.New("corr", "state", "client", "B-B", time.Minute)
+	e.Store.Update(sess, func() { sess.Handle = []byte("handle") })
+	if handle, err := e.consume(sess); err != nil || string(handle) != "handle" {
+		t.Fatalf("first consume = %q, %v", handle, err)
+	}
+	if _, err := e.consume(sess); !errors.Is(err, session.ErrResuming) {
+		t.Fatalf("second consume error = %v, want ErrResuming", err)
+	}
+	e.Store.Update(sess, func() { sess.Status = session.StatusCompleted })
+	e.Store.Finalize(sess)
+	if _, err := e.consume(sess); !errors.Is(err, ErrTerminal) {
+		t.Fatalf("terminal consume error = %v, want ErrTerminal", err)
+	}
+}
+
+func TestEvidenceMarshalFailureFailsSession(t *testing.T) {
+	e, _ := newEngine([]Result{
+		redirect("https://cb/a", "state"),
+		{Handle: []byte("h"), Step: map[string]any{
+			"kind": "done", "signed": map[string]any{"pdf": []byte("%PDF")},
+			"evidence": make(chan int),
+		}},
+	})
+	_, _ = e.Begin("corr", []byte("%PDF"), "B-B", "", nil)
+	sess, _ := e.Store.GetByState("state")
+	if _, _, _, err := e.Complete(context.Background(), sess, "code", "state"); err == nil {
+		t.Fatal("Complete() silently accepted evidence that cannot be serialized")
+	}
+	view, err := e.Store.ViewByID("corr")
+	if err != nil || view.Status != session.StatusFailed || view.Reason != reasonResumeError || len(view.Evidence) != 0 {
+		t.Fatalf("failed session = %+v, %v", view, err)
+	}
+}
+
+func TestOptionsValidateRequiresCompleteExpectedSigner(t *testing.T) {
+	for _, options := range []*Options{
+		{ExpectedSignerMatchOn: "certificate_serial_number"},
+		{ExpectedSignerValue: "PNONL-123"},
+	} {
+		if err := options.Validate(); err == nil {
+			t.Fatalf("Validate() accepted incomplete expected signer: %+v", options)
+		}
+	}
+	for _, options := range []*Options{
+		nil,
+		{},
+		{ExpectedSignerMatchOn: "certificate_serial_number", ExpectedSignerValue: "PNONL-123"},
+	} {
+		if err := options.Validate(); err != nil {
+			t.Fatalf("Validate() rejected complete options %+v: %v", options, err)
+		}
+	}
+}
+
 func TestRedactHandlesBadURL(t *testing.T) {
 	if got := redact("://bad url"); got == "" {
 		t.Fatalf("redact should not return empty, got %q", got)
-	}
-	if got := redactState("short"); got != "short" {
-		t.Fatalf("short state should be unredacted, got %q", got)
 	}
 }
 
@@ -238,15 +291,12 @@ func TestStepHelpers(t *testing.T) {
 	if _, _, err := stepDone(map[string]any{}); err == nil {
 		t.Fatal("done missing signed pdf should error")
 	}
-	if stepEvidence(map[string]any{}) != nil {
+	if evidence, err := stepEvidence(map[string]any{}); err != nil || evidence != nil {
 		t.Fatal("missing evidence should be nil")
 	}
 	st, reason := mapFailed(map[string]any{"evidence": map[string]any{}})
 	if st != session.StatusFailed || reason != "unknown" {
 		t.Fatalf("empty outcome → %s/%s, want failed/unknown", st, reason)
-	}
-	if redactState("abcdefgh") != "abcdef…" {
-		t.Fatalf("long state should be truncated, got %q", redactState("abcdefgh"))
 	}
 }
 

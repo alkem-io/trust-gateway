@@ -26,7 +26,7 @@ Starts a signing journey.
 
 - `document` may be omitted only when the deployed binary carries a sample PDF.
 - `conformanceLevel` is `B-B` or `B-T`; omission uses `TRUST_GATEWAY_DEFAULT_CONFORMANCE`.
-- `expectedSigner` is optional.
+- `expectedSigner` is optional; when present, both `matchOn` and `value` are required.
 - `clientState` is opaque, is never interpreted or logged, and is limited to 1024 bytes. It is
   required whenever `TRUST_GATEWAY_RETURN_URL` is configured.
 - The decoded PDF is limited to 20 MiB.
@@ -97,8 +97,8 @@ base64-encoded JSON evidence record. Its `signer` object is the authoritative si
 contract and contains `serial_number`, `common_name`, optional `given_name` and `surname`, and the
 RFC 4514 `raw_subject`. The certificate chain is not duplicated into the header; it is embedded in
 the PDF's CMS. Repeated authenticated reads return the same PDF and evidence until session eviction;
-result retrieval is not consuming. Unknown identifiers return `404`, and a known non-completed
-journey returns `409`.
+result retrieval is not consuming. Successful responses include `Cache-Control: no-store`. Unknown
+identifiers return `404`, and a known non-completed journey returns `409`.
 
 ## `GET /healthz` and `GET /readyz`
 

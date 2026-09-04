@@ -1,4 +1,4 @@
-// Package httpapi exposes the signing gateway's REST API (contracts/trust-gateway-api.md):
+// Package httpapi exposes the signing gateway's REST API (docs/trust-gateway-api.md):
 // start/complete/status/result + health, behind an optional API-key gate. It holds all secrets and
 // the SDK session handle server-side.
 package httpapi
@@ -69,7 +69,9 @@ func (s *Service) log() *slog.Logger {
 // Handler returns the routed, auth-wrapped HTTP handler.
 func (s *Service) Handler() http.Handler {
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET "+config.OAuthCallbackPath, s.handleOAuthCallback)
+	if s.Profile.ReturnURL != nil {
+		mux.HandleFunc("GET "+config.OAuthCallbackPath, s.handleOAuthCallback)
+	}
 	mux.HandleFunc("POST /v1/sign/start", s.handleStart)
 	mux.HandleFunc("POST /v1/sign/complete", s.handleComplete)
 	mux.HandleFunc("GET /v1/sign/status", s.handleStatus)
@@ -143,6 +145,17 @@ func (s *Service) handleStart(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "bad_request", "clientState is required")
 		return
 	}
+	var opts *flow.Options
+	if req.ExpectedSigner != nil {
+		opts = &flow.Options{
+			ExpectedSignerMatchOn: req.ExpectedSigner.MatchOn,
+			ExpectedSignerValue:   req.ExpectedSigner.Value,
+		}
+	}
+	if err := opts.Validate(); err != nil {
+		writeErr(w, http.StatusBadRequest, "bad_request", err.Error())
+		return
+	}
 	doc := s.Sample
 	if req.Document != "" {
 		// The request body is already bounded by MaxBytesReader (maxStartBodyBytes) above, so decoding
@@ -166,13 +179,6 @@ func (s *Service) handleStart(w http.ResponseWriter, r *http.Request) {
 	conformance := req.ConformanceLevel
 	if conformance == "" {
 		conformance = s.Profile.DefaultConformance
-	}
-	var opts *flow.Options
-	if req.ExpectedSigner != nil {
-		opts = &flow.Options{
-			ExpectedSignerMatchOn: req.ExpectedSigner.MatchOn,
-			ExpectedSignerValue:   req.ExpectedSigner.Value,
-		}
 	}
 	corr, err := newCorrelationID()
 	if err != nil {
@@ -225,7 +231,7 @@ func (s *Service) handleComplete(w http.ResponseWriter, r *http.Request) {
 	}
 	result, err := s.complete(r.Context(), req)
 	if err != nil {
-		s.writeCompleteError(w, err)
+		s.writeCompleteError(w, err, result.CorrelationID)
 		return
 	}
 	resp := map[string]any{keyStatus: string(result.Status)}
@@ -254,13 +260,14 @@ func (s *Service) handleOAuthCallback(w http.ResponseWriter, r *http.Request) {
 		Code: query.Get("code"), Error: query.Get("error"), State: query.Get("state"),
 	})
 	if !returnsToApplication(result, err) {
-		s.writeCompleteError(w, err)
+		s.writeCompleteError(w, err, result.CorrelationID)
 		return
 	}
 	if err != nil {
 		// The session itself is terminal and Alkemio obtains the authoritative failure via the private
 		// status endpoint. Return the browser without reflecting any error or status in its URL.
-		s.logCompleteError(err, result.CorrelationID)
+		_, _, _, conflict := classifyCompleteError(err)
+		s.logCompleteError(err, result.CorrelationID, conflict)
 	}
 	if result.RedirectURL != "" {
 		http.Redirect(w, r, result.RedirectURL, http.StatusFound)
@@ -313,7 +320,7 @@ func (s *Service) complete(ctx context.Context, req completeRequest) (completeRe
 	return result, completeErr
 }
 
-func (s *Service) writeCompleteError(w http.ResponseWriter, err error) {
+func (s *Service) writeCompleteError(w http.ResponseWriter, err error, correlationID string) {
 	switch {
 	case errors.Is(err, errInvalidComplete):
 		writeErr(w, http.StatusBadRequest, "bad_request", "missing state, code, or error")
@@ -322,13 +329,12 @@ func (s *Service) writeCompleteError(w http.ResponseWriter, err error) {
 		writeErr(w, http.StatusBadRequest, "unknown_state", "no pending session for that state")
 		return
 	}
-	code, errCode, msg, _ := classifyCompleteError(err)
-	s.logCompleteError(err, "")
+	code, errCode, msg, conflict := classifyCompleteError(err)
+	s.logCompleteError(err, correlationID, conflict)
 	writeErr(w, code, errCode, msg)
 }
 
-func (s *Service) logCompleteError(err error, correlationID string) {
-	_, _, _, conflict := classifyCompleteError(err)
+func (s *Service) logCompleteError(err error, correlationID string, conflict bool) {
 	if conflict {
 		s.log().Info("duplicate or in-flight complete rejected", "correlation_id", correlationID)
 		return
@@ -392,6 +398,7 @@ func (s *Service) handleResult(w http.ResponseWriter, r *http.Request) {
 	if len(v.Evidence) > 0 {
 		w.Header().Set("X-Signature-Evidence", base64.StdEncoding.EncodeToString(v.Evidence))
 	}
+	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("content-type", "application/pdf")
 	w.WriteHeader(http.StatusOK)
 	// The body is the SDK-produced signed PDF served as application/pdf (not HTML); no XSS surface.

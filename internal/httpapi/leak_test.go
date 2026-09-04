@@ -9,8 +9,8 @@ import (
 )
 
 // TestNoSecretInFrontendBoundResponses scans every client-bound response (start/complete/status/result
-// bodies + headers) for any secret, token, or SDK handle (SC-004) — distinct from the upstream
-// hash-only check in the E2E.
+// bodies + headers) for any secret, token, or SDK handle. The black-box E2E added in the next
+// delivery slice will independently exercise the full journey against the published mock image.
 func TestNoSecretInFrontendBoundResponses(t *testing.T) {
 	svc := newService(happySteps(), true)
 	h := svc.Handler()

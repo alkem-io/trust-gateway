@@ -105,9 +105,9 @@ func Load() (*Profile, error) {
 	}
 
 	ttlText := env(envSessionTTL, "15m")
-	ttl, err := time.ParseDuration(ttlText)
+	ttl, err := parseSessionTTL(ttlText)
 	if err != nil {
-		return nil, fmt.Errorf("invalid %s %q: %w", envSessionTTL, ttlText, err)
+		return nil, err
 	}
 	profile.SessionTTL = ttl
 
@@ -145,6 +145,17 @@ func Load() (*Profile, error) {
 		return nil, err
 	}
 	return profile, nil
+}
+
+func parseSessionTTL(value string) (time.Duration, error) {
+	ttl, err := time.ParseDuration(value)
+	if err != nil {
+		return 0, fmt.Errorf("invalid %s %q: %w", envSessionTTL, value, err)
+	}
+	if ttl <= 0 {
+		return 0, fmt.Errorf("invalid %s %q: must be positive", envSessionTTL, value)
+	}
+	return ttl, nil
 }
 
 func (profile *Profile) resolveAuth() error {

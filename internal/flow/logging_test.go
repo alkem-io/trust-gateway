@@ -12,10 +12,11 @@ import (
 )
 
 func TestEffectLoggingRedactsSecrets(t *testing.T) {
+	const oauthState = "DO-NOT-LOG-OAUTH-STATE"
 	var buf bytes.Buffer
 	e := &Engine{
 		SDK: &scriptedSDK{steps: []Result{
-			redirect("https://cb/oauth2/authorize", "s1"),
+			redirect("https://cb/oauth2/authorize", oauthState),
 			performHTTP("https://cb/oauth2/token?hash=TOPSECRET&code=ABC"),
 			done([]byte("%PDF")),
 		}},
@@ -25,8 +26,8 @@ func TestEffectLoggingRedactsSecrets(t *testing.T) {
 		TTL:   time.Minute,
 	}
 	_, _ = e.Begin("c", []byte("%PDF"), "B-B", "", nil)
-	s, _ := e.Store.GetByState("s1")
-	if _, _, _, err := e.Complete(context.Background(), s, "code", "s1"); err != nil {
+	s, _ := e.Store.GetByState(oauthState)
+	if _, _, _, err := e.Complete(context.Background(), s, "code", oauthState); err != nil {
 		t.Fatalf("complete: %v", err)
 	}
 
@@ -38,7 +39,7 @@ func TestEffectLoggingRedactsSecrets(t *testing.T) {
 		}
 	}
 	// But never the query string, which can carry the document hash / OAuth code.
-	for _, leak := range []string{"TOPSECRET", "hash=", "code=ABC"} {
+	for _, leak := range []string{"TOPSECRET", "hash=", "code=ABC", oauthState} {
 		if strings.Contains(out, leak) {
 			t.Fatalf("log leaked %q:\n%s", leak, out)
 		}

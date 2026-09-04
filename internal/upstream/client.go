@@ -5,11 +5,16 @@ package upstream
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"io"
 	"net/http"
 	"net/url"
 	"time"
 )
+
+// maxResponseBytes bounds a single Cleverbase/TSA response. The gateway sends only hashes upstream,
+// never PDFs; 4 MiB comfortably covers OAuth JSON, certificate metadata, signatures, and TSA DER.
+const maxResponseBytes = 4 << 20
 
 // Client performs HTTP effects, optionally rewriting the host (fixtures mode).
 type Client struct {
@@ -62,9 +67,12 @@ func (c *Client) Do(ctx context.Context, method, rawURL string, headers [][2]str
 		return 0, nil, err
 	}
 	defer func() { _ = resp.Body.Close() }()
-	b, err := io.ReadAll(resp.Body)
+	b, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes+1))
 	if err != nil {
 		return 0, nil, err
+	}
+	if len(b) > maxResponseBytes {
+		return 0, nil, fmt.Errorf("upstream response exceeds %d bytes", maxResponseBytes)
 	}
 	return resp.StatusCode, b, nil
 }
