@@ -93,9 +93,12 @@ Unknown identifiers return `404`.
 ## `GET /v1/sign/result?correlationId=…`
 
 A completed result is returned as `application/pdf`. `X-Signature-Evidence` contains the SDK's
-base64-encoded JSON evidence record. Repeated authenticated reads return the same PDF and evidence
-until session eviction; result retrieval is not consuming. Unknown identifiers return `404`, and a
-known non-completed journey returns `409`.
+base64-encoded JSON evidence record. Its `signer` object is the authoritative signer-identity
+contract and contains `serial_number`, `common_name`, optional `given_name` and `surname`, and the
+RFC 4514 `raw_subject`. The certificate chain is not duplicated into the header; it is embedded in
+the PDF's CMS. Repeated authenticated reads return the same PDF and evidence until session eviction;
+result retrieval is not consuming. Unknown identifiers return `404`, and a known non-completed
+journey returns `409`.
 
 ## `GET /healthz` and `GET /readyz`
 

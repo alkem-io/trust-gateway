@@ -56,8 +56,15 @@ func performHTTP(url string) flow.Result {
 }
 func done(pdf []byte) flow.Result {
 	return flow.Result{Handle: []byte("HANDLE-SECRET"), Step: map[string]any{"kind": "done",
-		"signed":   map[string]any{"pdf": pdf},
-		"evidence": map[string]any{"outcome": "signed", "request_digest": "abcd"}}}
+		"signed": map[string]any{"pdf": pdf},
+		"evidence": map[string]any{
+			"outcome": "signed", "request_digest": "abcd",
+			"signer": map[string]any{
+				"serial_number": "CERT-123", "common_name": "Ada Signer",
+				"given_name": "Ada", "surname": "Signer",
+				"raw_subject": "CN=Ada Signer,serialNumber=PNONL-123",
+			},
+		}}}
 }
 
 func happySteps() []flow.Result {
@@ -252,6 +259,21 @@ func TestGatewayCallbackOwnsBothOAuthLegsAndReturnsOpaqueState(t *testing.T) { /
 		} else if result.Body.String() != firstPDF || result.Header().Get("X-Signature-Evidence") != firstEvidence {
 			t.Fatal("repeated result fetch must return the same PDF and evidence")
 		}
+	}
+	evidenceJSON, err := base64.StdEncoding.DecodeString(firstEvidence)
+	if err != nil {
+		t.Fatalf("decode evidence: %v", err)
+	}
+	var evidence map[string]any
+	if err := json.Unmarshal(evidenceJSON, &evidence); err != nil {
+		t.Fatalf("parse evidence: %v", err)
+	}
+	signer, _ := evidence["signer"].(map[string]any)
+	if signer["serial_number"] != "CERT-123" || signer["raw_subject"] != "CN=Ada Signer,serialNumber=PNONL-123" {
+		t.Fatalf("signer identity missing from evidence: %v", signer)
+	}
+	if _, duplicated := evidence["cert_chain"]; duplicated {
+		t.Fatal("certificate chain must not be duplicated into the evidence header")
 	}
 }
 
