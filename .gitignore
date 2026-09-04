@@ -1,0 +1,15 @@
+bin/
+*.test
+*.out
+coverage.out
+.env
+.env.*
+!.env.example
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+.cleverbase/

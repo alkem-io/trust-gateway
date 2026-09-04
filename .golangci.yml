@@ -1,0 +1,63 @@
+version: "2"
+
+run:
+  timeout: 5m
+  modules-download-mode: readonly
+
+linters:
+  enable:
+    - errcheck
+    - errorlint
+    - govet
+    - ineffassign
+    - staticcheck
+    - unused
+    - bodyclose
+    - gocyclo
+    - misspell
+    - unconvert
+    - unparam
+    - revive
+    - gocritic
+    - gosec
+    - prealloc
+    - whitespace
+  settings:
+    gocyclo:
+      min-complexity: 15
+    staticcheck:
+      checks:
+        - "all"
+    revive:
+      enable-all-rules: false
+      rules:
+        - name: exported
+          severity: warning
+          arguments:
+            - "checkPrivateReceivers"
+            - "sayRepetitiveInsteadOfStutters"
+            - "checkPublicInterface"
+        - name: package-comments
+        - name: unused-parameter
+        - name: unreachable-code
+        - name: redefines-builtin-id
+        - name: defer
+        - name: constant-logical-expr
+        - name: bool-literal-in-expr
+        - name: atomic
+        - name: error-strings
+  exclusions:
+    presets: []
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
+  settings:
+    goimports:
+      local-prefixes:
+        - github.com/alkem-io/trust-gateway
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0
