@@ -42,7 +42,7 @@ func TestEntropyFailureFailsEveryEntryPoint(t *testing.T) {
 // is to cover the thin glue that converts binding sessions to flow.Result. The full signing flow is
 // validated by the credential-free E2E.
 func TestAdapterBeginAndResumeGlue(t *testing.T) { //nolint:gocyclo // One linear adapter journey covers every FFI entry point.
-	sample, err := os.ReadFile(filepath.Join("testdata", "sample.pdf"))
+	sample, err := os.ReadFile(filepath.Join("..", "..", "cmd", "server", "sample.pdf"))
 	if err != nil {
 		t.Fatalf("read sample: %v", err)
 	}
