@@ -33,7 +33,7 @@ test:
 	printf 'total coverage: %s%%\n' "$${total}"
 
 e2e: docker
-	TRUST_GATEWAY_IMAGE=alkemio/$(BINARY):latest .scripts/e2e/run-mock.sh
+	TRUST_GATEWAY_IMAGE=alkemio/$(BINARY):latest .scripts/ci/standalone-e2e.sh
 
 e2e-live:
 	CGO_ENABLED=0 TRUST_GATEWAY_E2E_MODE=live $(GO) test -v -count=1 ./e2e

@@ -41,6 +41,7 @@ type testConfig struct {
 
 func loadConfig(t *testing.T) testConfig {
 	t.Helper()
+	required := os.Getenv("TRUST_GATEWAY_E2E_REQUIRED") == "1"
 	cfg := testConfig{
 		baseURL:  strings.TrimRight(os.Getenv("TRUST_GATEWAY_E2E_URL"), "/"),
 		apiKey:   os.Getenv("TRUST_GATEWAY_E2E_API_KEY"),
@@ -49,7 +50,7 @@ func loadConfig(t *testing.T) testConfig {
 		timeout:  45 * time.Second,
 	}
 	if cfg.baseURL == "" || cfg.apiKey == "" {
-		t.Skip("black-box E2E requires TRUST_GATEWAY_E2E_URL and TRUST_GATEWAY_E2E_API_KEY")
+		unavailable(t, required, "black-box E2E requires TRUST_GATEWAY_E2E_URL and TRUST_GATEWAY_E2E_API_KEY")
 	}
 	if cfg.mode == "" {
 		cfg.mode = "mock"
@@ -67,12 +68,20 @@ func loadConfig(t *testing.T) testConfig {
 		cfg.timeout = 5 * time.Minute
 	}
 	if cfg.mode == "live" && cfg.caBundle == "" {
-		t.Skip("live black-box E2E requires TRUST_GATEWAY_E2E_CA_BUNDLE")
+		unavailable(t, required, "live black-box E2E requires TRUST_GATEWAY_E2E_CA_BUNDLE")
 	}
 	if _, err := exec.LookPath("openssl"); err != nil {
-		t.Skip("openssl is required for independent CMS validation")
+		unavailable(t, required, "openssl is required for independent CMS validation")
 	}
 	return cfg
+}
+
+func unavailable(t *testing.T, required bool, message string) {
+	t.Helper()
+	if required {
+		t.Fatal(message)
+	}
+	t.Skip(message)
 }
 
 type redirectOpener interface {
@@ -286,20 +295,36 @@ func waitCompleted(t *testing.T, ctx context.Context, client *http.Client, cfg t
 
 func assertEvidence(t *testing.T, encoded string) {
 	t.Helper()
+	if err := validateEvidence(encoded); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func validateEvidence(encoded string) error {
 	if encoded == "" {
-		t.Fatal("result lacks X-Signature-Evidence")
+		return errors.New("result lacks X-Signature-Evidence")
 	}
 	raw, err := base64.StdEncoding.DecodeString(encoded)
 	if err != nil {
-		t.Fatalf("evidence is not base64: %v", err)
+		return fmt.Errorf("evidence is not base64: %w", err)
 	}
 	var evidence map[string]any
 	if err := json.Unmarshal(raw, &evidence); err != nil {
-		t.Fatalf("evidence is not JSON: %v", err)
+		return fmt.Errorf("evidence is not JSON: %w", err)
 	}
-	if evidence["outcome"] != "signed" || evidence["signer"] == nil {
-		t.Fatalf("evidence lacks signed outcome or signer identity: %v", evidence)
+	if evidence["outcome"] != "signed" {
+		return errors.New("evidence outcome is not signed")
 	}
+	signer, ok := evidence["signer"].(map[string]any)
+	if !ok {
+		return errors.New("evidence lacks signer identity")
+	}
+	serialNumber, serialOK := signer["serial_number"].(string)
+	rawSubject, subjectOK := signer["raw_subject"].(string)
+	if !serialOK || strings.TrimSpace(serialNumber) == "" || !subjectOK || strings.TrimSpace(rawSubject) == "" {
+		return errors.New("evidence signer identity lacks serial_number or raw_subject")
+	}
+	return nil
 }
 
 func verifyCMS(t *testing.T, pdf []byte, cfg testConfig) {
@@ -321,7 +346,7 @@ func verifyCMS(t *testing.T, pdf []byte, cfg testConfig) {
 		t.Fatalf("ByteRange out of bounds: %v for %d-byte PDF", parts, len(pdf))
 	}
 	signed := append(append([]byte(nil), pdf[a:a+b]...), pdf[c:c+d]...)
-	cms := extractContents(t, pdf)
+	cms := extractSignatureContents(t, pdf, a+b, c)
 
 	work := t.TempDir()
 	cmsPath := filepath.Join(work, "signature.der")
@@ -337,7 +362,7 @@ func verifyCMS(t *testing.T, pdf []byte, cfg testConfig) {
 	if cfg.mode == "mock" {
 		args = append(args, "-noverify")
 	} else {
-		args = append(args, "-CAfile", cfg.caBundle, "-purpose", "any", "-no_check_time")
+		args = append(args, "-CAfile", cfg.caBundle, "-purpose", "any")
 	}
 	//nolint:gosec // G204: executable and flags are fixed; the optional CA path is explicit operator input.
 	if output, err := exec.Command("openssl", args...).CombinedOutput(); err != nil {
@@ -345,27 +370,15 @@ func verifyCMS(t *testing.T, pdf []byte, cfg testConfig) {
 	}
 }
 
-func extractContents(t *testing.T, pdf []byte) []byte {
+func extractSignatureContents(t *testing.T, pdf []byte, gapStart, gapEnd int) []byte {
 	t.Helper()
-	contentsAt := bytes.Index(pdf, []byte("/Contents"))
-	if contentsAt < 0 {
-		t.Fatal("signed PDF lacks /Contents")
-	}
-	start := bytes.IndexByte(pdf[contentsAt:], '<')
-	if start < 0 {
-		t.Fatal("signed PDF /Contents lacks opening delimiter")
-	}
-	start += contentsAt + 1
-	end := bytes.IndexByte(pdf[start:], '>')
-	if end < 0 {
-		t.Fatal("signed PDF /Contents lacks closing delimiter")
-	}
+	gap := pdf[gapStart:gapEnd]
 	hexText := strings.Map(func(r rune) rune {
 		if r == ' ' || r == '\n' || r == '\r' || r == '\t' {
 			return -1
 		}
 		return r
-	}, string(pdf[start:start+end]))
+	}, string(gap))
 	raw, err := hex.DecodeString(hexText)
 	if err != nil {
 		t.Fatalf("decode CMS hex: %v", err)
@@ -402,4 +415,33 @@ func derLength(der []byte) (int, error) {
 		return 0, errors.New("truncated DER value")
 	}
 	return total, nil
+}
+
+func TestExtractSignatureContentsUsesByteRangeGap(t *testing.T) {
+	t.Parallel()
+	pageContents := []byte("/Contents 1 0 R\n")
+	signatureGap := []byte("30 00")
+	pdf := append(append([]byte(nil), pageContents...), signatureGap...)
+
+	got := extractSignatureContents(t, pdf, len(pageContents), len(pdf))
+	if !bytes.Equal(got, []byte{0x30, 0x00}) {
+		t.Fatalf("signature contents = %x, want 3000", got)
+	}
+}
+
+func TestValidateEvidenceRequiresSignerIdentity(t *testing.T) {
+	t.Parallel()
+	tests := map[string]string{
+		"missing serial number": `{"outcome":"signed","signer":{"raw_subject":"CN=Ada"}}`,
+		"missing raw subject":   `{"outcome":"signed","signer":{"serial_number":"CERT-123"}}`,
+	}
+	for name, raw := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			encoded := base64.StdEncoding.EncodeToString([]byte(raw))
+			if err := validateEvidence(encoded); err == nil {
+				t.Fatal("validateEvidence accepted incomplete signer identity")
+			}
+		})
+	}
 }

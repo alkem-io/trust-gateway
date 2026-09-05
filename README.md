@@ -114,6 +114,15 @@ authorization URL; a human completes both steps in the Cleverbase app while the 
 authoritative gateway status. Run it from a location that can reach the private `/v1/sign/*`
 endpoints:
 
+| E2E variable | Default | Required / meaning |
+| --- | --- | --- |
+| `TRUST_GATEWAY_E2E_URL` | unset | Private base URL of the deployed gateway. |
+| `TRUST_GATEWAY_E2E_API_KEY` | unset | Bearer key for the private signing routes. |
+| `TRUST_GATEWAY_E2E_MODE` | `mock` | `mock` for automated fixture authorization; `live` for human Cleverbase authorization. |
+| `TRUST_GATEWAY_E2E_CA_BUNDLE` | unset | CA bundle for live CMS trust validation; required in live mode. |
+| `TRUST_GATEWAY_E2E_TIMEOUT` | `45s` (`5m` live) | Bounded journey timeout. |
+| `TRUST_GATEWAY_E2E_REQUIRED` | unset | Set to `1` in CI/deployment gates so missing prerequisites fail instead of skipping. |
+
 ```bash
 export TRUST_GATEWAY_E2E_URL=https://<private-gateway-address>
 export TRUST_GATEWAY_E2E_API_KEY=<gateway-api-key>

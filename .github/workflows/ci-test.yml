@@ -27,4 +27,5 @@ jobs:
         with:
           persist-credentials: false
       - name: Build Kubernetes base
+        # ubuntu-latest provides kubectl; the base has no network-fetched dependencies.
         run: kubectl kustomize deploy/k8s/base >/dev/null

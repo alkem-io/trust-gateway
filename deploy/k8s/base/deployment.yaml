@@ -16,6 +16,7 @@ spec:
       labels:
         app.kubernetes.io/name: trust-gateway
     spec:
+      automountServiceAccountToken: false
       securityContext:
         runAsNonRoot: true
         runAsUser: 65532
@@ -25,7 +26,7 @@ spec:
       containers:
         - name: trust-gateway
           image: ghcr.io/alkem-io/trust-gateway:overlay-must-set-digest
-          imagePullPolicy: IfNotPresent
+          imagePullPolicy: Always
           ports:
             - name: http
               containerPort: 8080
@@ -64,4 +65,5 @@ spec:
             capabilities:
               drop:
                 - ALL
-      terminationGracePeriodSeconds: 30
+      # Exceeds cmd/server requestBudget (150s), allowing graceful shutdown of one in-flight request.
+      terminationGracePeriodSeconds: 180
