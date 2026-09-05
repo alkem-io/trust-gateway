@@ -55,8 +55,8 @@ func loadConfig(t *testing.T) testConfig {
 	if cfg.mode == "" {
 		cfg.mode = "mock"
 	}
-	if cfg.mode != "mock" && cfg.mode != "live" {
-		t.Fatalf("TRUST_GATEWAY_E2E_MODE must be mock or live, got %q", cfg.mode)
+	if cfg.mode != "mock" && cfg.mode != "stub" && cfg.mode != "live" {
+		t.Fatalf("TRUST_GATEWAY_E2E_MODE must be mock, stub, or live, got %q", cfg.mode)
 	}
 	if raw := os.Getenv("TRUST_GATEWAY_E2E_TIMEOUT"); raw != "" {
 		d, err := time.ParseDuration(raw)
@@ -70,8 +70,10 @@ func loadConfig(t *testing.T) testConfig {
 	if cfg.mode == "live" && cfg.caBundle == "" {
 		unavailable(t, required, "live black-box E2E requires TRUST_GATEWAY_E2E_CA_BUNDLE")
 	}
-	if _, err := exec.LookPath("openssl"); err != nil {
-		unavailable(t, required, "openssl is required for independent CMS validation")
+	if cfg.mode != "stub" {
+		if _, err := exec.LookPath("openssl"); err != nil {
+			unavailable(t, required, "openssl is required for independent CMS validation")
+		}
 	}
 	return cfg
 }
@@ -95,11 +97,13 @@ func (liveOpener) Open(_ context.Context, authorizeURL, _ string) error {
 	return nil
 }
 
-type mockOpener struct {
+// automatedOpener follows the documented immediate browser redirects used by both the local mock
+// and Cleverbase's public hash-signing stub. The interactive live service keeps the human opener.
+type automatedOpener struct {
 	client *http.Client
 }
 
-func (m mockOpener) Open(ctx context.Context, authorizeURL, correlationID string) error {
+func (m automatedOpener) Open(ctx context.Context, authorizeURL, correlationID string) error {
 	current := authorizeURL
 	callbackCount := 0
 	for range 6 {
@@ -156,6 +160,7 @@ func validateTerminalReturn(location *url.URL, correlationID string, callbackCou
 type startResponse struct {
 	RedirectURL   string `json:"redirectUrl"`
 	CorrelationID string `json:"correlationId"`
+	ExpiresAt     string `json:"expiresAt"`
 }
 
 type statusResponse struct {
@@ -174,6 +179,16 @@ func TestBlackboxSigning(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), cfg.timeout)
 	defer cancel()
 
+	started := startSigning(t, ctx, client, cfg)
+	if err := openerFor(cfg, client).Open(ctx, started.RedirectURL, started.CorrelationID); err != nil {
+		t.Fatalf("authorize signing: %v", err)
+	}
+	status := waitTerminal(t, ctx, client, cfg, started.CorrelationID)
+	assertTerminalResult(t, ctx, client, cfg, started.CorrelationID, status)
+}
+
+func startSigning(t *testing.T, ctx context.Context, client *http.Client, cfg testConfig) startResponse {
+	t.Helper()
 	document, err := os.ReadFile(filepath.Join("testdata", "sample.pdf"))
 	if err != nil {
 		t.Fatalf("read sample PDF: %v", err)
@@ -188,21 +203,34 @@ func TestBlackboxSigning(t *testing.T) {
 	}
 	var started startResponse
 	doJSON(t, ctx, client, cfg, http.MethodPost, "/v1/sign/start", body, http.StatusOK, &started)
-	if started.RedirectURL == "" || started.CorrelationID == "" {
-		t.Fatalf("start response lacks redirectUrl or correlationId: %+v", started)
+	if started.RedirectURL == "" || started.CorrelationID == "" || started.ExpiresAt == "" {
+		t.Fatalf("start response lacks redirectUrl, correlationId, or expiresAt: %+v", started)
 	}
+	if _, err := time.Parse(time.RFC3339, started.ExpiresAt); err != nil {
+		t.Fatalf("start expiresAt = %q, want RFC 3339: %v", started.ExpiresAt, err)
+	}
+	return started
+}
 
-	var opener redirectOpener = mockOpener{client: client}
+func openerFor(cfg testConfig, client *http.Client) redirectOpener {
 	if cfg.mode == "live" {
-		opener = liveOpener{}
+		return liveOpener{}
 	}
-	if err := opener.Open(ctx, started.RedirectURL, started.CorrelationID); err != nil {
-		t.Fatalf("authorize signing: %v", err)
+	return automatedOpener{client: client}
+}
+
+func assertTerminalResult(t *testing.T, ctx context.Context, client *http.Client, cfg testConfig, correlationID string, status statusResponse) {
+	t.Helper()
+	if cfg.mode == "stub" {
+		assertStubFailure(t, ctx, client, cfg, correlationID, status)
+		return
 	}
-	waitCompleted(t, ctx, client, cfg, started.CorrelationID)
+	if status.Status != "completed" {
+		t.Fatalf("signing ended with %s: %s", status.Status, status.Reason)
+	}
 
 	req, err := authorizedRequest(ctx, cfg, http.MethodGet,
-		"/v1/sign/result?correlationId="+url.QueryEscape(started.CorrelationID), nil)
+		"/v1/sign/result?correlationId="+url.QueryEscape(correlationID), nil)
 	if err != nil {
 		t.Fatalf("build result request: %v", err)
 	}
@@ -267,7 +295,7 @@ func authorizedRequest(ctx context.Context, cfg testConfig, method, path string,
 	return req, nil
 }
 
-func waitCompleted(t *testing.T, ctx context.Context, client *http.Client, cfg testConfig, correlationID string) {
+func waitTerminal(t *testing.T, ctx context.Context, client *http.Client, cfg testConfig, correlationID string) statusResponse {
 	t.Helper()
 	ticker := time.NewTicker(500 * time.Millisecond)
 	defer ticker.Stop()
@@ -277,9 +305,9 @@ func waitCompleted(t *testing.T, ctx context.Context, client *http.Client, cfg t
 			"/v1/sign/status?correlationId="+url.QueryEscape(correlationID), nil, http.StatusOK, &status)
 		switch status.Status {
 		case "completed":
-			return
+			return status
 		case "failed", "declined":
-			t.Fatalf("signing ended with %s: %s", status.Status, status.Reason)
+			return status
 		case "pending", "authorizing":
 			// Continue until the browser completes both authorization legs or the context expires.
 		default:
@@ -288,8 +316,33 @@ func waitCompleted(t *testing.T, ctx context.Context, client *http.Client, cfg t
 		select {
 		case <-ctx.Done():
 			t.Fatalf("signing did not complete within %s: %v", cfg.timeout, ctx.Err())
+			return statusResponse{}
 		case <-ticker.C:
 		}
+	}
+}
+
+func assertStubFailure(t *testing.T, ctx context.Context, client *http.Client, cfg testConfig, correlationID string, status statusResponse) {
+	t.Helper()
+	if status.Status != "failed" || status.Reason != "signature_invalid" {
+		t.Fatalf("stub terminal status = %+v, want failed/signature_invalid", status)
+	}
+	req, err := authorizedRequest(ctx, cfg, http.MethodGet,
+		"/v1/sign/result?correlationId="+url.QueryEscape(correlationID), nil)
+	if err != nil {
+		t.Fatalf("build failed-result request: %v", err)
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("fetch failed result: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxJSONBytes+1))
+	if err != nil {
+		t.Fatalf("read failed result: %v", err)
+	}
+	if resp.StatusCode != http.StatusConflict || len(body) == 0 || resp.Header.Get("X-Signature-Evidence") != "" {
+		t.Fatalf("stub result = status %d, body %q, evidence %q; want 409 JSON with no result evidence", resp.StatusCode, body, resp.Header.Get("X-Signature-Evidence"))
 	}
 }
 

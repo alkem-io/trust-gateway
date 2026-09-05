@@ -46,3 +46,10 @@ jobs:
         run: |
           TRUST_GATEWAY_IMAGE="ghcr.io/${{ github.repository }}:pr-${{ github.event.number }}-${IMAGE_SHA:0:7}" \
             .scripts/ci/standalone-e2e.sh
+      - name: Run Cleverbase public-stub contract journey
+        env:
+          IMAGE_SHA: ${{ github.sha }}
+        run: |
+          TRUST_GATEWAY_E2E_MODE=stub \
+          TRUST_GATEWAY_IMAGE="ghcr.io/${{ github.repository }}:pr-${{ github.event.number }}-${IMAGE_SHA:0:7}" \
+            .scripts/ci/standalone-e2e.sh
