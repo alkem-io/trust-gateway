@@ -33,6 +33,7 @@ func (s *scriptedSDK) ResumeRedirectError([]byte, string, string) (Result, error
 	return s.next()
 }
 func (s *scriptedSDK) ResumeHTTP([]byte, int, []byte) (Result, error) { return s.next() }
+func (*scriptedSDK) VerifyPDF([]byte) (PDFVerification, error)        { return PDFVerification{}, nil }
 
 type fakeEffector struct {
 	rewritePrefix string
@@ -390,6 +391,7 @@ func (c *countingSDK) ResumeHTTP([]byte, int, []byte) (Result, error) {
 	defer c.mu.Unlock()
 	return done([]byte("%PDF-signed")), nil
 }
+func (*countingSDK) VerifyPDF([]byte) (PDFVerification, error) { return PDFVerification{}, nil }
 
 // TestConcurrentDuplicateCallbackDoesNotDoubleResume proves (under `go test -race`) that two
 // concurrent /complete callbacks for the SAME pending state advance the SDK resume exactly once: the

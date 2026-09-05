@@ -6,8 +6,8 @@ requests, and temporary signed-document evidence. The Alkemio server remains aut
 domain authorization, durable signing attempts, immutable source documents, audit, and attachment.
 
 The HTTP contract is documented in [docs/trust-gateway-api.md](docs/trust-gateway-api.md). The only
-public signing route is `GET /oauth/cleverbase/callback`; `/v1/sign/*` stays private behind either a
-gateway API key or deployment network isolation.
+public signing route is `GET /oauth/cleverbase/callback`; `/v1/sign/*` and `/v1/verify` stay private
+behind either a gateway API key or deployment network isolation.
 
 ## Configuration
 
@@ -29,8 +29,8 @@ profile.
 | `TRUST_GATEWAY_BASE_URL` | unset | Internal mock base URL; required in fixtures mode. Live mode does not rewrite SDK URLs. |
 | `TRUST_GATEWAY_PUBLIC_BASE_URL` | `TRUST_GATEWAY_BASE_URL` | Browser-reachable mock base used only to rewrite fixture authorization redirects. |
 | `TRUST_GATEWAY_UPSTREAM_BASE_URL` | unset | Optional SDK endpoint override for the documented Cleverbase hash-signing stub. It replaces both OAuth and CSC origins, is refused when `TRUST_GATEWAY_ENV=production`, and is warned at startup. `BASE_URL` and `PUBLIC_BASE_URL` remain fixture rewrites. |
-| `TRUST_GATEWAY_API_KEY` | unset | Bearer key protecting `/v1/sign/*`. Set it to enable gateway auth. It cannot be combined with `TRUST_GATEWAY_AUTH_DISABLED=true`. |
-| `TRUST_GATEWAY_AUTH_DISABLED` | `false` | Explicitly disables gateway API-key auth in fixtures or live mode. It requires private ingress to `/v1/sign/*` (Kubernetes `NetworkPolicy`; Docker private network) while retaining egress to Cleverbase and the TSA. The gateway logs a startup warning. |
+| `TRUST_GATEWAY_API_KEY` | unset | Bearer key protecting `/v1/sign/*` and `/v1/verify`. Set it to enable gateway auth. It cannot be combined with `TRUST_GATEWAY_AUTH_DISABLED=true`. |
+| `TRUST_GATEWAY_AUTH_DISABLED` | `false` | Explicitly disables gateway API-key auth in fixtures or live mode. It requires private ingress to `/v1/sign/*` and `/v1/verify` (Kubernetes `NetworkPolicy`; Docker private network) while retaining egress to Cleverbase and the TSA. The gateway logs a startup warning. |
 | `TRUST_GATEWAY_DEFAULT_CONFORMANCE` | `B-B` | Default PAdES level: `B-B` or `B-T`. Requests may override it. |
 | `TRUST_GATEWAY_SESSION_TTL` | `15m` | Lifetime of an in-progress in-memory signing session. |
 | `TRUST_GATEWAY_LISTEN` | `:8080` | HTTP listen address inside the workload. |
@@ -69,8 +69,9 @@ Rust toolchain. Unit coverage is gated at 95% for every Go package.
 The runtime image is non-root and has no shell or package manager. The current store is deliberately
 single-replica and in-memory: sessions and results survive only for their TTL and are lost on restart.
 The pilot deployment must use one replica and retry a signing journey from the start after a restart.
-The signing-start response exposes that store-assigned expiry as `expiresAt`; see the
-[API contract](docs/trust-gateway-api.md#start-a-signing-session).
+The signing-start response exposes that store-assigned expiry as `expiresAt`. The private,
+stateless `/v1/verify` endpoint checks the PDF/CMS integrity supported by the SDK without claiming
+certificate trust. See the [API contract](docs/trust-gateway-api.md).
 
 ## Kubernetes base
 
@@ -85,7 +86,8 @@ Every dev-orchestration overlay must:
    `ghcr.io/alkem-io/trust-gateway@sha256:…` digest;
 2. provide `trust-gateway-config` and `trust-gateway-secrets` for the `envFrom` references;
 3. allow `alkemio-server` and the Traefik ingress controller to reach port 8080, while keeping
-   `/v1/sign/*` private; the exact ingress route in the next item is the path restriction; and
+   `/v1/sign/*` and `/v1/verify` private; the exact ingress route in the next item is the path
+   restriction; and
 4. add one public, unauthenticated, exact-path route for `GET /oauth/cleverbase/callback`, with no
    prefix stripping and priority above the web-client catch-all.
 
@@ -141,8 +143,8 @@ and DEV are the first deployment targets; TEST is reserved for the later automat
 ### Local Alkemio stack: mock and public stub
 
 The local Alkemio Traefik stack owns `localhost:3000`. It routes only the exact public callback to
-the gateway; `/v1/sign/*` stays on a private Docker ingress network with unrestricted egress to
-Cleverbase and the TSA. For both configurations below use:
+the gateway; `/v1/sign/*` and `/v1/verify` stay on a private Docker ingress network with unrestricted
+egress to Cleverbase and the TSA. For both configurations below use:
 
 ```dotenv
 TRUST_GATEWAY_REDIRECT_URI=http://localhost:3000/oauth/cleverbase/callback
@@ -154,8 +156,8 @@ TRUST_GATEWAY_LISTEN=:8080
 ```
 
 `TRUST_GATEWAY_AUTH_DISABLED=true` deliberately removes an Alkemio API-key setting. It is safe only
-when the local Compose network and production `NetworkPolicy` leave `/v1/sign/*` reachable to
-`alkemio-server` alone. Never add a public ingress route for those paths.
+when the local Compose network and production `NetworkPolicy` leave `/v1/sign/*` and `/v1/verify`
+reachable to `alkemio-server` alone. Never add a public ingress route for those paths.
 
 Use the mock as the primary local fixture. Start the pinned mock image as the Compose service
 `cleverbase-refmock`, expose it to the host on `localhost:9000` for the browser redirect, and give

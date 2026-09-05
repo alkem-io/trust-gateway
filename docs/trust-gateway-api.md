@@ -1,9 +1,9 @@
 # Trust Gateway HTTP API
 
-All response bodies are JSON unless noted. Requests to `/v1/sign/*` require
+All response bodies are JSON unless noted. Requests to `/v1/sign/*` and `/v1/verify` require
 `Authorization: Bearer <TRUST_GATEWAY_API_KEY>` unless the deployment explicitly sets
 `TRUST_GATEWAY_AUTH_DISABLED=true`; that mode requires network isolation and never makes a public
-Ingress route for `/v1/sign/*`. The only public signing route is the exact
+Ingress route for `/v1/sign/*` or `/v1/verify`. The only public signing route is the exact
 `GET /oauth/cleverbase/callback` path. Health probes are also public.
 
 Errors have the shape `{ "error": "<code>", "message": "<safe text>" }`. A `correlationId` is an
@@ -109,6 +109,35 @@ RFC 4514 `raw_subject`. The certificate chain is not duplicated into the header;
 the PDF's CMS. Repeated authenticated reads return the same PDF and evidence until session eviction;
 result retrieval is not consuming. All responses include `Cache-Control: no-store`, including `404`
 for an unknown identifier and `409` for a known non-completed journey.
+
+## `POST /v1/verify`
+
+Verifies the internal integrity of one unsigned or singly-signed PDF without creating session state.
+
+```json
+{ "document": "<base64 PDF>" }
+```
+
+The decoded PDF is limited to 20 MiB. Success is `200` with an integrity verdict:
+
+```json
+{
+  "integrity": true,
+  "profile": "B-B",
+  "signer": { "serial": "07FB…", "cn": "Jane Doe" },
+  "reasons": []
+}
+```
+
+For invalid or unsupported input, `integrity` is `false`, `profile` and `signer` are `null`, and
+`reasons` contains the SDK's snake_case reason strings verbatim. The gateway does not remap those
+values. `integrity=true` establishes the PDF ByteRange/CMS integrity supported by the SDK; for B-T
+it also verifies the timestamp token's internal content digest, signature-value imprint binding,
+and embedded-signer signature. It does not establish signer or TSA chain trust, trusted-list or
+revocation status, signer authorization, or TSA policy. `chainTrusted` is deliberately absent.
+
+The endpoint uses the same API-key or explicit network-isolation boundary as `/v1/sign/*`. All
+responses include `Cache-Control: no-store`.
 
 ## `GET /healthz` and `GET /readyz`
 

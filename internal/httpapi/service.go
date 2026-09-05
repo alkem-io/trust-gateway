@@ -1,6 +1,6 @@
-// Package httpapi exposes the signing gateway's REST API (docs/trust-gateway-api.md):
-// start/complete/status/result + health, behind an optional API-key gate. It holds all secrets and
-// the SDK session handle server-side.
+// Package httpapi exposes the signing gateway's REST API (docs/trust-gateway-api.md): signing,
+// stateless PDF integrity verification, and health, behind an optional API-key gate. It holds all
+// secrets and SDK signing-session handles server-side.
 package httpapi
 
 import (
@@ -35,10 +35,10 @@ const (
 	// maxPDFBytes caps the decoded document. 20 MiB comfortably covers realistic signable PDFs while
 	// bounding per-request memory.
 	maxPDFBytes = 20 << 20 // 20 MiB
-	// maxStartBodyBytes caps the raw JSON request body read before decoding. The document travels
+	// maxPDFJSONBodyBytes caps a raw JSON request body carrying a PDF. The document travels
 	// base64-encoded (~4/3 expansion) inside JSON, so the body cap is maxPDFBytes*4/3 plus a small
 	// slack for the surrounding JSON fields.
-	maxStartBodyBytes = maxPDFBytes*4/3 + (1 << 16) // base64 expansion + 64 KiB JSON slack
+	maxPDFJSONBodyBytes = maxPDFBytes*4/3 + (1 << 16) // base64 expansion + 64 KiB JSON slack
 	// maxCompleteBodyBytes caps /v1/sign/complete bodies, which carry only short OAuth code/state/error
 	// fields — no document — so a small cap suffices and bounds the decode allocation.
 	maxCompleteBodyBytes = 1 << 16 // 64 KiB
@@ -77,6 +77,7 @@ func (s *Service) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/sign/complete", s.handleComplete)
 	mux.HandleFunc("GET /v1/sign/status", s.handleStatus)
 	mux.HandleFunc("GET /v1/sign/result", s.handleResult)
+	mux.HandleFunc("POST /v1/verify", s.handleVerify)
 	mux.HandleFunc("GET /healthz", s.handleHealth)
 	mux.HandleFunc("GET /readyz", s.handleHealth)
 	return s.authMiddleware(mux)
@@ -126,7 +127,7 @@ func (s *Service) handleStart(w http.ResponseWriter, r *http.Request) {
 	// Bound the body before reading it so a client cannot force a huge allocation decoding the JSON
 	// (which carries the base64 document). MaxBytesReader trips the decode with an *http.MaxBytesError
 	// once the cap is exceeded.
-	r.Body = http.MaxBytesReader(w, r.Body, maxStartBodyBytes)
+	r.Body = http.MaxBytesReader(w, r.Body, maxPDFJSONBodyBytes)
 	var req startRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		var maxErr *http.MaxBytesError
@@ -159,7 +160,7 @@ func (s *Service) handleStart(w http.ResponseWriter, r *http.Request) {
 	}
 	doc := s.Sample
 	if req.Document != "" {
-		// The request body is already bounded by MaxBytesReader (maxStartBodyBytes) above, so decoding
+		// The request body is already bounded by MaxBytesReader (maxPDFJSONBodyBytes) above, so decoding
 		// allocates at most that many bytes — bounded. Decode, then enforce the EXACT decoded-PDF cap
 		// (a pre-decode base64 DecodedLen check over-rejects by up to 2 bytes at the boundary).
 		b, err := base64.StdEncoding.DecodeString(req.Document)
@@ -200,6 +201,45 @@ func (s *Service) handleStart(w http.ResponseWriter, r *http.Request) {
 		"correlationId": corr,
 		"expiresAt":     expiresAt.UTC().Format(time.RFC3339),
 	})
+}
+
+type verifyRequest struct {
+	Document string `json:"document"`
+}
+
+func (s *Service) handleVerify(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
+	r.Body = http.MaxBytesReader(w, r.Body, maxPDFJSONBodyBytes)
+	var req verifyRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		var maxErr *http.MaxBytesError
+		if errors.As(err, &maxErr) {
+			writeErr(w, http.StatusRequestEntityTooLarge, "payload_too_large", "request body too large")
+			return
+		}
+		writeErr(w, http.StatusBadRequest, "bad_request", "invalid JSON body")
+		return
+	}
+	if req.Document == "" {
+		writeErr(w, http.StatusBadRequest, "bad_request", "document is required")
+		return
+	}
+	document, err := base64.StdEncoding.DecodeString(req.Document)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, "bad_request", "document is not valid base64")
+		return
+	}
+	if len(document) > maxPDFBytes {
+		writeErr(w, http.StatusRequestEntityTooLarge, "payload_too_large", "document exceeds the size limit")
+		return
+	}
+	verification, err := s.Engine.SDK.VerifyPDF(document)
+	if err != nil {
+		s.log().Error("verify failed", "err", err.Error())
+		writeErr(w, http.StatusInternalServerError, "verify_failed", "could not verify document")
+		return
+	}
+	writeJSON(w, http.StatusOK, verification)
 }
 
 type completeRequest struct {

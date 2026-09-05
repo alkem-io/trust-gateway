@@ -65,7 +65,7 @@ func run(ctx context.Context, logger *slog.Logger) error {
 	if !p.AuthEnabled {
 		// Auth is disabled only by the explicit, mutually-exclusive config opt-out. There is no
 		// per-route bypass: deployment network policy is therefore the single enforcement boundary.
-		logger.Warn("API authentication is disabled; /v1/sign/* must be network-isolated", "mode", string(p.Mode))
+		logger.Warn("API authentication is disabled; /v1/sign/* and /v1/verify must be network-isolated", "mode", string(p.Mode))
 	}
 	if p.SDKUpstreamBaseURL != "" {
 		// The SDK validates the URL itself. Do not log the value: malformed future inputs could carry

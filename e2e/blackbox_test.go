@@ -168,6 +168,16 @@ type statusResponse struct {
 	Reason string `json:"reason"`
 }
 
+type verifyResponse struct {
+	Integrity bool    `json:"integrity"`
+	Profile   *string `json:"profile"`
+	Signer    *struct {
+		Serial string `json:"serial"`
+		CN     string `json:"cn"`
+	} `json:"signer"`
+	Reasons []string `json:"reasons"`
+}
+
 func TestBlackboxSigning(t *testing.T) {
 	cfg := loadConfig(t)
 	client := &http.Client{
@@ -184,7 +194,10 @@ func TestBlackboxSigning(t *testing.T) {
 		t.Fatalf("authorize signing: %v", err)
 	}
 	status := waitTerminal(t, ctx, client, cfg, started.CorrelationID)
-	assertTerminalResult(t, ctx, client, cfg, started.CorrelationID, status)
+	signedPDF := assertTerminalResult(t, ctx, client, cfg, started.CorrelationID, status)
+	if cfg.mode == "mock" {
+		assertGatewayVerification(t, ctx, client, cfg, signedPDF)
+	}
 }
 
 func startSigning(t *testing.T, ctx context.Context, client *http.Client, cfg testConfig) startResponse {
@@ -219,11 +232,11 @@ func openerFor(cfg testConfig, client *http.Client) redirectOpener {
 	return automatedOpener{client: client}
 }
 
-func assertTerminalResult(t *testing.T, ctx context.Context, client *http.Client, cfg testConfig, correlationID string, status statusResponse) {
+func assertTerminalResult(t *testing.T, ctx context.Context, client *http.Client, cfg testConfig, correlationID string, status statusResponse) []byte {
 	t.Helper()
 	if cfg.mode == "stub" {
 		assertStubFailure(t, ctx, client, cfg, correlationID, status)
-		return
+		return nil
 	}
 	if status.Status != "completed" {
 		t.Fatalf("signing ended with %s: %s", status.Status, status.Reason)
@@ -254,6 +267,53 @@ func assertTerminalResult(t *testing.T, ctx context.Context, client *http.Client
 	}
 	assertEvidence(t, resp.Header.Get("X-Signature-Evidence"))
 	verifyCMS(t, result, cfg)
+	return result
+}
+
+func assertGatewayVerification(t *testing.T, ctx context.Context, client *http.Client, cfg testConfig, signedPDF []byte) {
+	t.Helper()
+	valid := verifyThroughGateway(t, ctx, client, cfg, signedPDF)
+	if !valid.Integrity || valid.Profile == nil || *valid.Profile != "B-B" || valid.Signer == nil ||
+		valid.Signer.Serial == "" || valid.Signer.CN == "" || len(valid.Reasons) != 0 {
+		t.Fatalf("gateway rejected its signed PDF: %+v", valid)
+	}
+
+	tampered := tamperSignedWhitespace(t, signedPDF)
+	invalid := verifyThroughGateway(t, ctx, client, cfg, tampered)
+	if invalid.Integrity || invalid.Profile != nil || invalid.Signer != nil ||
+		len(invalid.Reasons) != 1 || invalid.Reasons[0] != "message_digest_mismatch" {
+		t.Fatalf("gateway tamper verdict = %+v, want message_digest_mismatch", invalid)
+	}
+}
+
+func verifyThroughGateway(t *testing.T, ctx context.Context, client *http.Client, cfg testConfig, pdf []byte) verifyResponse {
+	t.Helper()
+	body, err := json.Marshal(map[string]string{"document": base64.StdEncoding.EncodeToString(pdf)})
+	if err != nil {
+		t.Fatalf("encode verify request: %v", err)
+	}
+	var verdict verifyResponse
+	doJSON(t, ctx, client, cfg, http.MethodPost, "/v1/verify", body, http.StatusOK, &verdict)
+	return verdict
+}
+
+func tamperSignedWhitespace(t *testing.T, pdf []byte) []byte {
+	t.Helper()
+	parts, err := parseByteRange(pdf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tampered := append([]byte(nil), pdf...)
+	for _, span := range [][2]int{{parts[0], parts[0] + parts[1]}, {parts[2], parts[2] + parts[3]}} {
+		for i := span[0]; i < span[1]; i++ {
+			if tampered[i] == ' ' {
+				tampered[i] = '\n' // Equal-length PDF whitespace keeps structure/offsets valid.
+				return tampered
+			}
+		}
+	}
+	t.Fatal("signed PDF ranges contain no whitespace byte to tamper")
+	return nil
 }
 
 func doJSON(t *testing.T, ctx context.Context, client *http.Client, cfg testConfig, method, path string, body []byte, wantStatus int, out any) {

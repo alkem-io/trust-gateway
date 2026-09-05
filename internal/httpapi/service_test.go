@@ -27,7 +27,7 @@ import (
 type scriptSDK struct {
 	steps            []flow.Result
 	i                int
-	verification     *flow.PDFVerification
+	verification     flow.PDFVerification
 	verificationErr  error
 	verifiedDocument []byte
 }
@@ -44,7 +44,7 @@ func (s *scriptSDK) Begin([]byte, string, *flow.Options) (flow.Result, error)   
 func (s *scriptSDK) ResumeRedirect([]byte, string, string) (flow.Result, error)      { return s.next() }
 func (s *scriptSDK) ResumeRedirectError([]byte, string, string) (flow.Result, error) { return s.next() }
 func (s *scriptSDK) ResumeHTTP([]byte, int, []byte) (flow.Result, error)             { return s.next() }
-func (s *scriptSDK) VerifyPDF(document []byte) (*flow.PDFVerification, error) {
+func (s *scriptSDK) VerifyPDF(document []byte) (flow.PDFVerification, error) {
 	s.verifiedDocument = append([]byte(nil), document...)
 	return s.verification, s.verificationErr
 }
@@ -164,11 +164,11 @@ func TestVerifyPDFContract(t *testing.T) {
 	profile := "B-T"
 	tests := []struct {
 		name string
-		want *flow.PDFVerification
+		want flow.PDFVerification
 	}{
 		{
 			name: "valid",
-			want: &flow.PDFVerification{
+			want: flow.PDFVerification{
 				Integrity: true,
 				Profile:   &profile,
 				Signer:    &flow.PDFSigner{Serial: "CERT-123", CN: "Ada Signer"},
@@ -177,7 +177,7 @@ func TestVerifyPDFContract(t *testing.T) {
 		},
 		{
 			name: "invalid",
-			want: &flow.PDFVerification{
+			want: flow.PDFVerification{
 				Integrity: false,
 				Profile:   nil,
 				Signer:    nil,
@@ -209,8 +209,8 @@ func TestVerifyPDFContract(t *testing.T) {
 			if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
 				t.Fatalf("decode verify response: %v", err)
 			}
-			if !reflect.DeepEqual(&got, tt.want) {
-				t.Fatalf("verify response = %#v, want %#v", &got, tt.want)
+			if !reflect.DeepEqual(got, tt.want) {
+				t.Fatalf("verify response = %#v, want %#v", got, tt.want)
 			}
 			var shape map[string]json.RawMessage
 			if err := json.Unmarshal(rec.Body.Bytes(), &shape); err != nil {
@@ -228,7 +228,7 @@ func TestVerifyPDFUsesTheConfiguredPrivateAuthBoundary(t *testing.T) {
 	body := `{"document":"` + document + `"}`
 
 	protected := newService(happySteps(), true)
-	protected.Engine.SDK.(*scriptSDK).verification = &flow.PDFVerification{Reasons: []string{"malformed_pdf"}}
+	protected.Engine.SDK.(*scriptSDK).verification = flow.PDFVerification{Reasons: []string{"malformed_pdf"}}
 	if rec := do(t, protected.Handler(), http.MethodPost, "/v1/verify", body, ""); rec.Code != http.StatusUnauthorized {
 		t.Fatalf("verify without API key = %d, want 401", rec.Code)
 	}
@@ -237,7 +237,7 @@ func TestVerifyPDFUsesTheConfiguredPrivateAuthBoundary(t *testing.T) {
 	}
 
 	isolated := newService(happySteps(), false)
-	isolated.Engine.SDK.(*scriptSDK).verification = &flow.PDFVerification{Reasons: []string{"malformed_pdf"}}
+	isolated.Engine.SDK.(*scriptSDK).verification = flow.PDFVerification{Reasons: []string{"malformed_pdf"}}
 	if rec := do(t, isolated.Handler(), http.MethodPost, "/v1/verify", body, ""); rec.Code != http.StatusOK {
 		t.Fatalf("verify with explicit network-isolation auth mode = %d %s, want 200", rec.Code, rec.Body)
 	}
@@ -655,7 +655,7 @@ func TestStartRejectsOversizeBody(t *testing.T) {
 
 	// 1) A raw JSON body above the MaxBytesReader cap → 413 (trips during decode, before any
 	//    document allocation).
-	bigBody := `{"document":"` + strings.Repeat("A", maxStartBodyBytes+1) + `"}`
+	bigBody := `{"document":"` + strings.Repeat("A", maxPDFJSONBodyBytes+1) + `"}`
 	if rec := do(t, h, "POST", "/v1/sign/start", bigBody, ""); rec.Code != http.StatusRequestEntityTooLarge {
 		t.Fatalf("oversize body should 413, got %d", rec.Code)
 	}
@@ -663,8 +663,8 @@ func TestStartRejectsOversizeBody(t *testing.T) {
 	// 2) A body within the raw cap but whose decoded document exceeds maxPDFBytes → 413. Use valid
 	//    base64 (a repeated 'A' is base64 for 0x00 triples) just over the decoded limit.
 	overB64Len := base64.StdEncoding.EncodedLen(maxPDFBytes + 3)
-	if overB64Len >= maxStartBodyBytes {
-		t.Fatalf("test invariant: oversized-document base64 (%d) must fit under the raw body cap (%d)", overB64Len, maxStartBodyBytes)
+	if overB64Len >= maxPDFJSONBodyBytes {
+		t.Fatalf("test invariant: oversized-document base64 (%d) must fit under the raw body cap (%d)", overB64Len, maxPDFJSONBodyBytes)
 	}
 	overDoc := `{"document":"` + strings.Repeat("A", overB64Len) + `"}`
 	if rec := do(t, h, "POST", "/v1/sign/start", overDoc, ""); rec.Code != http.StatusRequestEntityTooLarge {

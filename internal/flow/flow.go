@@ -67,6 +67,8 @@ type SDK interface {
 	ResumeRedirectError(handle []byte, oauthError, state string) (Result, error)
 	// ResumeHTTP advances an SDK-emitted HTTP effect.
 	ResumeHTTP(handle []byte, status int, body []byte) (Result, error)
+	// VerifyPDF returns the SDK's stateless integrity verdict for one PDF.
+	VerifyPDF(document []byte) (PDFVerification, error)
 }
 
 // Effector performs a single HTTP effect (the upstream client rewrites the host internally in

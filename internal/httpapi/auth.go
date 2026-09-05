@@ -8,8 +8,8 @@ import (
 	"github.com/alkem-io/trust-gateway/internal/config"
 )
 
-// authMiddleware enforces a bearer API key on /v1/sign/* when auth is enabled (the default). Health
-// endpoints are always open for orchestration probes. Rejection happens before any signing work.
+// authMiddleware enforces a bearer API key on private API routes when auth is enabled (the default).
+// Health endpoints are always open for orchestration probes. Rejection happens before any SDK work.
 func (s *Service) authMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		callbackMethod := r.Method == http.MethodGet || r.Method == http.MethodHead
