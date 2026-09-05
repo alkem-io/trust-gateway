@@ -180,6 +180,38 @@ func TestLiveUpstreamOverrideIsNonProductionOnly(t *testing.T) {
 	})
 }
 
+func TestProductionPublicBaseURLRequiresHTTPS(t *testing.T) {
+	tests := []struct {
+		name        string
+		environment string
+		publicURL   string
+		wantError   bool
+	}{
+		{name: "production https", environment: "production", publicURL: "https://public.example"},
+		{name: "production http", environment: "production", publicURL: "http://public.example", wantError: true},
+		{name: "acceptance http", environment: "acceptance", publicURL: "http://public.example"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			env := validLiveEnv()
+			env["TRUST_GATEWAY_ENV"] = test.environment
+			env["TRUST_GATEWAY_PUBLIC_BASE_URL"] = test.publicURL
+			setEnv(t, env)
+
+			_, err := Load()
+			if test.wantError {
+				if err == nil || !strings.Contains(err.Error(), "TRUST_GATEWAY_PUBLIC_BASE_URL") || !strings.Contains(err.Error(), "production") {
+					t.Fatalf("Load() error = %v, want production HTTPS policy error", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("Load() error = %v", err)
+			}
+		})
+	}
+}
+
 func TestFixturesRequiresBaseURL(t *testing.T) {
 	setEnv(t, map[string]string{
 		"TRUST_GATEWAY_API_KEY": "key",
