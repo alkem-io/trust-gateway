@@ -13,3 +13,5 @@ jobs:
       contents: read
     with:
       run-vet: true
+      setup-script: .scripts/ci/setup-cleverbase-ffi.sh
+      coverage-min: 95

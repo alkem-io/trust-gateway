@@ -1,26 +1,38 @@
-.PHONY: build docker test lint generate setup-hooks run clean
+.PHONY: build docker test lint generate setup-hooks setup-native run clean
 
 BINARY := trust-gateway
 GO := go
 GOFLAGS := -race -count=1
 COVERAGE_MIN := 95
 
+define with-native
+	lib_dir="$$(.scripts/ci/setup-cleverbase-ffi.sh)" && \
+	CGO_ENABLED=1 CGO_LDFLAGS="$${CGO_LDFLAGS:+$${CGO_LDFLAGS} }-L$${lib_dir}" $(1)
+endef
+
 build:
 	mkdir -p bin/
-	$(GO) build -o bin/$(BINARY) ./cmd/server/
+	$(call with-native,$(GO) build -o bin/$(BINARY) ./cmd/server/)
 
 docker:
 	docker build -t alkemio/trust-gateway:latest .
 
 test:
-	$(GO) test $(GOFLAGS) -coverprofile=coverage.out -covermode=atomic ./internal/...
-	@total="$$( $(GO) tool cover -func=coverage.out | awk '/^total:/ {gsub(/%/, "", $$3); print $$3}' )"; \
-		echo "coverage: $${total}%"; \
-		awk "BEGIN { exit !($${total} >= $(COVERAGE_MIN)) }" || \
-		{ echo "coverage $${total}% is below $(COVERAGE_MIN)%"; exit 1; }
+	@output="$$( $(call with-native,$(GO) test $(GOFLAGS) -coverprofile=coverage.out -covermode=atomic ./...) 2>&1 )" || \
+		{ status=$$?; printf '%s\n' "$${output}"; exit $$status; }; \
+	printf '%s\n' "$${output}"; \
+	failures="$$(printf '%s\n' "$${output}" | awk -v min=$(COVERAGE_MIN) ' \
+		$$1 == "?" && $$0 ~ /\[no test files\]/ { print $$2 ": no test coverage" } \
+		{ for (i = 1; i <= NF; i++) if ($$i == "coverage:") { pct = $$(i + 1); gsub(/%/, "", pct); if (pct + 0 < min) print $$2 ": " pct "%" } }')"; \
+	if [ -n "$${failures}" ]; then \
+		printf 'package coverage below $(COVERAGE_MIN)%%:\n%s\n' "$${failures}"; \
+		exit 1; \
+	fi; \
+	total="$$( $(GO) tool cover -func=coverage.out | awk '/^total:/ {gsub(/%/, "", $$3); print $$3}' )"; \
+	printf 'total coverage: %s%%\n' "$${total}"
 
 lint:
-	golangci-lint run
+	$(call with-native,golangci-lint run)
 
 generate:
 	$(GO) generate ./...
@@ -29,8 +41,11 @@ setup-hooks:
 	git config core.hooksPath .githooks
 	@echo "Git hooks configured"
 
+setup-native:
+	@.scripts/ci/setup-cleverbase-ffi.sh
+
 run:
-	$(GO) run ./cmd/server/
+	$(call with-native,$(GO) run ./cmd/server/)
 
 clean:
 	rm -rf bin/ coverage.out

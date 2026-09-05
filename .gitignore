@@ -13,3 +13,4 @@ coverage.out
 .DS_Store
 Thumbs.db
 .cleverbase/
+.native/
