@@ -68,3 +68,68 @@ Rust toolchain. Unit coverage is gated at 95% for every Go package.
 The runtime image is non-root and has no shell or package manager. The current store is deliberately
 single-replica and in-memory: sessions and results survive only for their TTL and are lost on restart.
 The pilot deployment must use one replica and retry a signing journey from the start after a restart.
+
+## Kubernetes base
+
+`deploy/k8s/base` is a kustomize-consumable Deployment and ClusterIP Service. It intentionally
+contains no Ingress, ConfigMap, Secret, or environment-specific value. Applying the base directly
+cannot accidentally deploy a mutable image: its image tag is the non-resolving
+`overlay-must-set-digest` sentinel.
+
+Every dev-orchestration overlay must:
+
+1. replace the image through the kustomize `images` transformer with an immutable
+   `ghcr.io/alkem-io/trust-gateway@sha256:…` digest;
+2. provide `trust-gateway-config` and `trust-gateway-secrets` for the `envFrom` references;
+3. keep `/v1/sign/*` private and reachable only by `alkemio-server`; and
+4. add one public, unauthenticated, exact-path route for `GET /oauth/cleverbase/callback`, with no
+   prefix stripping and priority above the web-client catch-all.
+
+The base deliberately uses one replica and a `Recreate` strategy while session storage is in-memory.
+It runs as UID/GID 65532 with a read-only root filesystem, RuntimeDefault seccomp, and all Linux
+capabilities dropped. Validate it locally with:
+
+```bash
+kubectl kustomize deploy/k8s/base >/dev/null
+```
+
+## Black-box signing test
+
+The black-box test imports no gateway or SDK package. It drives a running image only through HTTP,
+traverses both public callback legs, retrieves the signed PDF, and independently verifies its
+detached CMS with OpenSSL. The credential-free path uses the published Cleverbase mock image pinned
+by digest and compiles with `CGO_ENABLED=0`.
+
+```bash
+make e2e
+```
+
+`make e2e` builds the local gateway image, starts the gateway and pinned mock on an isolated Docker
+network, polls their health endpoints, runs one B-B/RSA signing journey, and always removes the
+containers and network. Override `TRUST_GATEWAY_E2E_GATEWAY_PORT` or
+`TRUST_GATEWAY_E2E_MOCK_PORT` if ports 18080 or 19000 are occupied.
+
+The same driver can validate a deployed gateway against real Cleverbase. It prints the first
+authorization URL; a human completes both steps in the Cleverbase app while the test polls the
+authoritative gateway status. Run it from a location that can reach the private `/v1/sign/*`
+endpoints:
+
+| E2E variable | Default | Required / meaning |
+| --- | --- | --- |
+| `TRUST_GATEWAY_E2E_URL` | unset | Private base URL of the deployed gateway. |
+| `TRUST_GATEWAY_E2E_API_KEY` | unset | Bearer key for the private signing routes. |
+| `TRUST_GATEWAY_E2E_MODE` | `mock` | `mock` for automated fixture authorization; `live` for human Cleverbase authorization. |
+| `TRUST_GATEWAY_E2E_CA_BUNDLE` | unset | CA bundle for live CMS trust validation; required in live mode. |
+| `TRUST_GATEWAY_E2E_TIMEOUT` | `45s` (`5m` live) | Bounded journey timeout. |
+| `TRUST_GATEWAY_E2E_REQUIRED` | unset | Set to `1` in CI/deployment gates so missing prerequisites fail instead of skipping. |
+
+```bash
+export TRUST_GATEWAY_E2E_URL=https://<private-gateway-address>
+export TRUST_GATEWAY_E2E_API_KEY=<gateway-api-key>
+export TRUST_GATEWAY_E2E_CA_BUNDLE=/path/to/cleverbase-acceptance-ca.pem
+export TRUST_GATEWAY_E2E_TIMEOUT=5m # optional
+make e2e-live
+```
+
+The real-Cleverbase acceptance run is manual because the signer must authorize in the app. SANDBOX
+and DEV are the first deployment targets; TEST is reserved for the later automated nightly run.
