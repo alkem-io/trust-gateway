@@ -141,6 +141,13 @@ func TestAuthRequiredAndHealthOpen(t *testing.T) {
 	}
 }
 
+func TestAuthDisabledLeavesSigningRoutesToNetworkIsolation(t *testing.T) {
+	h := newService(happySteps(), false).Handler()
+	if rec := do(t, h, http.MethodPost, "/v1/sign/start", `{}`, ""); rec.Code != http.StatusOK {
+		t.Fatalf("start without an API key when auth is disabled = %d, want 200: %s", rec.Code, rec.Body)
+	}
+}
+
 func TestGatewayCallbackIsPublicAndRequiresState(t *testing.T) {
 	svc := newService(happySteps(), true)
 	svc.Profile.ReturnURL = mustParseURL(t, "https://alkemio.example/complete")

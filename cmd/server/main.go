@@ -62,6 +62,11 @@ func run(ctx context.Context, logger *slog.Logger) error {
 	if err != nil {
 		return fmt.Errorf("config: %w", err)
 	}
+	if !p.AuthEnabled {
+		// Auth is disabled only by the explicit, mutually-exclusive config opt-out. There is no
+		// per-route bypass: deployment network policy is therefore the single enforcement boundary.
+		logger.Warn("API authentication is disabled; /v1/sign/* must be network-isolated", "mode", string(p.Mode))
+	}
 
 	store := session.NewMemory()
 	var internalRewrite, publicRewrite string
