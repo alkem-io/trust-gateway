@@ -61,7 +61,7 @@ make build
 make docker
 ```
 
-The Go binding is pinned to `bindings/go/v0.2.1`. `make setup-native` downloads the matching
+The Go binding is pinned to `bindings/go/v0.3.0`. `make setup-native` downloads the matching
 Cleverbase FFI archive for the current Go platform and verifies its pinned SHA-256 digest. Build,
 test, lint, run, and container targets all invoke the same setup script; this repository requires no
 Rust toolchain. Unit coverage is gated at 95% for every Go package.

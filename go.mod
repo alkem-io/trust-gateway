@@ -3,7 +3,7 @@ module github.com/alkem-io/trust-gateway
 go 1.26.1
 
 require (
-	github.com/alkem-io/cleverbase-sdk/bindings/go v0.2.1
+	github.com/alkem-io/cleverbase-sdk/bindings/go v0.3.0
 	github.com/fxamacker/cbor/v2 v2.9.2
 )
 
