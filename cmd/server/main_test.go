@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io"
@@ -45,6 +46,19 @@ func fixtureRuntime(t *testing.T) {
 	cleanGatewayEnv(t)
 	t.Setenv("TRUST_GATEWAY_MODE", "fixtures")
 	t.Setenv("TRUST_GATEWAY_BASE_URL", "http://mock:9000")
+	t.Setenv("TRUST_GATEWAY_AUTH_DISABLED", "true")
+	t.Setenv("TRUST_GATEWAY_LISTEN", "127.0.0.1:0")
+}
+
+func liveNetworkIsolatedRuntime(t *testing.T) {
+	t.Helper()
+	cleanGatewayEnv(t)
+	t.Setenv("TRUST_GATEWAY_MODE", "live")
+	t.Setenv("TRUST_GATEWAY_CLIENT_ID", "client")
+	t.Setenv("TRUST_GATEWAY_CLIENT_SECRET", "secret")
+	t.Setenv("TRUST_GATEWAY_REDIRECT_URI", "http://localhost:3000/oauth/cleverbase/callback")
+	t.Setenv("TRUST_GATEWAY_RETURN_URL", "http://localhost:3000/api/public/rest/content-signing/complete")
+	t.Setenv("TRUST_GATEWAY_TSA_URL", "https://tsa.example/tsr")
 	t.Setenv("TRUST_GATEWAY_AUTH_DISABLED", "true")
 	t.Setenv("TRUST_GATEWAY_LISTEN", "127.0.0.1:0")
 }
@@ -139,6 +153,35 @@ func TestRunWithAlreadyCanceledContext(t *testing.T) {
 	cancel()
 	if err := run(ctx, slog.New(slog.NewTextHandler(io.Discard, nil))); err != nil {
 		t.Fatalf("run() error = %v", err)
+	}
+}
+
+func TestRunWarnsWhenLiveAPIRoutesAreNetworkIsolated(t *testing.T) {
+	liveNetworkIsolatedRuntime(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	var logs bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logs, nil))
+	if err := run(ctx, logger); err != nil {
+		t.Fatalf("run() error = %v", err)
+	}
+	if !strings.Contains(logs.String(), "API authentication is disabled") {
+		t.Fatalf("startup warning missing from logs: %s", logs.String())
+	}
+}
+
+func TestRunWarnsWhenCleverbaseUpstreamIsOverridden(t *testing.T) {
+	liveNetworkIsolatedRuntime(t)
+	t.Setenv("TRUST_GATEWAY_UPSTREAM_BASE_URL", "https://trust-driver-stub-hash-signing.cleverbase.com")
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	var logs bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logs, nil))
+	if err := run(ctx, logger); err != nil {
+		t.Fatalf("run() error = %v", err)
+	}
+	if !strings.Contains(logs.String(), "Cleverbase upstream endpoint is overridden") {
+		t.Fatalf("upstream override warning missing from logs: %s", logs.String())
 	}
 }
 

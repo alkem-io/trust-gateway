@@ -1,7 +1,9 @@
 # Trust Gateway HTTP API
 
 All response bodies are JSON unless noted. Requests to `/v1/sign/*` require
-`Authorization: Bearer <TRUST_GATEWAY_API_KEY>`. The only public signing route is the exact
+`Authorization: Bearer <TRUST_GATEWAY_API_KEY>` unless the deployment explicitly sets
+`TRUST_GATEWAY_AUTH_DISABLED=true`; that mode requires network isolation and never makes a public
+Ingress route for `/v1/sign/*`. The only public signing route is the exact
 `GET /oauth/cleverbase/callback` path. Health probes are also public.
 
 Errors have the shape `{ "error": "<code>", "message": "<safe text>" }`. A `correlationId` is an
@@ -41,11 +43,14 @@ Success is `200`:
 ```json
 {
   "redirectUrl": "https://…/oauth2/authorize?…",
-  "correlationId": "…"
+  "correlationId": "…",
+  "expiresAt": "2026-09-05T15:30:00Z"
 }
 ```
 
-The PDF remains inside the gateway; only its digest is sent to Cleverbase.
+`expiresAt` is the RFC 3339 UTC expiry assigned to this in-memory gateway session. The Alkemio
+server stores that authoritative moment on its signing attempt rather than reproducing the gateway
+TTL. The PDF remains inside the gateway; only its digest is sent to Cleverbase.
 
 ## `GET /oauth/cleverbase/callback?code=…&state=…`
 

@@ -25,7 +25,7 @@ func TestEffectLoggingRedactsSecrets(t *testing.T) {
 		Log:   slog.New(slog.NewTextHandler(&buf, nil)),
 		TTL:   time.Minute,
 	}
-	_, _ = e.Begin("c", []byte("%PDF"), "B-B", "", nil)
+	_, _, _ = e.Begin("c", []byte("%PDF"), "B-B", "", nil)
 	s, _ := e.Store.GetByState(oauthState)
 	if _, _, _, err := e.Complete(context.Background(), s, "code", oauthState); err != nil {
 		t.Fatalf("complete: %v", err)

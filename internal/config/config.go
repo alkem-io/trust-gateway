@@ -46,6 +46,9 @@ const (
 	envTSAAuth            = "TRUST_GATEWAY_TSA_AUTH"
 	envTSAPolicy          = "TRUST_GATEWAY_TSA_POLICY"
 	envTSAURL             = "TRUST_GATEWAY_TSA_URL"
+	// envSDKUpstreamBaseURL deliberately differs from envBaseURL: this is the SDK's authoritative
+	// Cleverbase endpoint selection, while BASE_URL only rewrites fixture HTTP effects.
+	envSDKUpstreamBaseURL = "TRUST_GATEWAY_UPSTREAM_BASE_URL"
 )
 
 const (
@@ -69,6 +72,10 @@ type Profile struct {
 
 	UpstreamBaseURL       string
 	PublicUpstreamBaseURL string
+	// SDKUpstreamBaseURL optionally replaces the selected Cleverbase origin inside the SDK, for a
+	// documented developer/stub service. The SDK owns URL syntax/security validation; this profile
+	// only applies the gateway's production-policy restriction before any signing session starts.
+	SDKUpstreamBaseURL string
 
 	APIKey      string
 	AuthEnabled bool
@@ -99,6 +106,7 @@ func Load() (*Profile, error) {
 		TSAPolicy:             os.Getenv(envTSAPolicy),
 		UpstreamBaseURL:       os.Getenv(envBaseURL),
 		PublicUpstreamBaseURL: os.Getenv(envPublicBaseURL),
+		SDKUpstreamBaseURL:    os.Getenv(envSDKUpstreamBaseURL),
 		APIKey:                os.Getenv(envAPIKey),
 		DefaultConformance:    env(envDefaultConformance, ConformanceBB),
 		Listen:                env(envListen, ":8080"),
@@ -114,14 +122,8 @@ func Load() (*Profile, error) {
 	if err := profile.resolveAuth(); err != nil {
 		return nil, err
 	}
-	if profile.DefaultConformance != ConformanceBB && profile.DefaultConformance != ConformanceBT {
-		return nil, fmt.Errorf("invalid %s %q (%s|%s)", envDefaultConformance, profile.DefaultConformance, ConformanceBB, ConformanceBT)
-	}
-	if profile.Environment != "acceptance" && profile.Environment != "production" {
-		return nil, fmt.Errorf("invalid %s %q (acceptance|production)", envEnvironment, profile.Environment)
-	}
-	if profile.CSCAPI != "v1_rsa" && profile.CSCAPI != "v2_ecdsa" {
-		return nil, fmt.Errorf("invalid %s %q (v1_rsa|v2_ecdsa)", envCSCAPI, profile.CSCAPI)
+	if err := profile.validateStaticFields(); err != nil {
+		return nil, err
 	}
 
 	switch profile.Mode {
@@ -147,6 +149,19 @@ func Load() (*Profile, error) {
 	return profile, nil
 }
 
+func (profile *Profile) validateStaticFields() error {
+	if profile.DefaultConformance != ConformanceBB && profile.DefaultConformance != ConformanceBT {
+		return fmt.Errorf("invalid %s %q (%s|%s)", envDefaultConformance, profile.DefaultConformance, ConformanceBB, ConformanceBT)
+	}
+	if profile.Environment != "acceptance" && profile.Environment != "production" {
+		return fmt.Errorf("invalid %s %q (acceptance|production)", envEnvironment, profile.Environment)
+	}
+	if profile.CSCAPI != "v1_rsa" && profile.CSCAPI != "v2_ecdsa" {
+		return fmt.Errorf("invalid %s %q (v1_rsa|v2_ecdsa)", envCSCAPI, profile.CSCAPI)
+	}
+	return profile.validateSDKUpstreamPolicy()
+}
+
 func parseSessionTTL(value string) (time.Duration, error) {
 	ttl, err := time.ParseDuration(value)
 	if err != nil {
@@ -160,8 +175,8 @@ func parseSessionTTL(value string) (time.Duration, error) {
 
 func (profile *Profile) resolveAuth() error {
 	authDisabled := strings.EqualFold(os.Getenv(envAuthDisabled), "true")
-	if authDisabled && profile.Mode == ModeLive {
-		return fmt.Errorf("%s is not allowed in live mode: API-key auth (%s) is mandatory", envAuthDisabled, envAPIKey)
+	if authDisabled && profile.APIKey != "" {
+		return fmt.Errorf("%s and %s cannot both be set", envAPIKey, envAuthDisabled)
 	}
 	switch {
 	case profile.APIKey != "":
@@ -169,7 +184,14 @@ func (profile *Profile) resolveAuth() error {
 	case authDisabled:
 		profile.AuthEnabled = false
 	default:
-		return fmt.Errorf("API auth is on by default: set %s, or %s=true for local fixtures runs", envAPIKey, envAuthDisabled)
+		return fmt.Errorf("API auth is on by default: set %s, or explicitly set %s=true for network-isolated runs", envAPIKey, envAuthDisabled)
+	}
+	return nil
+}
+
+func (profile *Profile) validateSDKUpstreamPolicy() error {
+	if profile.SDKUpstreamBaseURL != "" && profile.Environment == "production" {
+		return fmt.Errorf("%s is not allowed when %s=production", envSDKUpstreamBaseURL, envEnvironment)
 	}
 	return nil
 }

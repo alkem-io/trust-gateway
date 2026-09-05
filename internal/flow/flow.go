@@ -187,19 +187,21 @@ func (e *Engine) fail(s *session.Session, status session.Status, reason string, 
 	e.Store.Finalize(s)
 }
 
-// Begin starts a session, stores the handle, and returns the (rewritten) service-auth redirect URL.
-func (e *Engine) Begin(corr string, document []byte, conformance, clientState string, opts *Options) (string, error) {
+// Begin starts a session, stores the handle, and returns the (rewritten) service-auth redirect URL
+// together with the exact expiry the store assigned to that session. Returning it from the same
+// creation operation keeps callers from recomputing TTLs or rereading mutable session state.
+func (e *Engine) Begin(corr string, document []byte, conformance, clientState string, opts *Options) (string, time.Time, error) {
 	res, err := e.SDK.Begin(document, conformance, opts)
 	if err != nil {
-		return "", err
+		return "", time.Time{}, err
 	}
 	if kind := stepKind(res.Step); kind != stepKindRedirect {
 		// begin always emits the service-scope redirect; anything else is a hard error.
-		return "", fmt.Errorf("begin produced unexpected step %q", kind)
+		return "", time.Time{}, fmt.Errorf("begin produced unexpected step %q", kind)
 	}
 	rawURL, state, perr := stepRedirect(res.Step)
 	if perr != nil {
-		return "", fmt.Errorf("begin produced malformed redirect: %w", perr)
+		return "", time.Time{}, fmt.Errorf("begin produced malformed redirect: %w", perr)
 	}
 	s := e.Store.New(corr, state, clientState, conformance, e.TTL)
 	e.Store.Update(s, func() {
@@ -207,7 +209,7 @@ func (e *Engine) Begin(corr string, document []byte, conformance, clientState st
 		s.Status = session.StatusAuthorizing
 	})
 	e.Log.Info("begin", "correlation_id", corr)
-	return e.rewriteRedirect(rawURL), nil
+	return e.rewriteRedirect(rawURL), s.ExpiresAt, nil
 }
 
 // Complete advances a session after a redirect return with code+state. ctx is the request context,

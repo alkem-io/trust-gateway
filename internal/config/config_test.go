@@ -13,7 +13,7 @@ var knownEnvKeys = []string{
 	"TRUST_GATEWAY_DEFAULT_CONFORMANCE", "TRUST_GATEWAY_ENV", "TRUST_GATEWAY_LISTEN",
 	"TRUST_GATEWAY_MODE", "TRUST_GATEWAY_PUBLIC_BASE_URL", "TRUST_GATEWAY_REDIRECT_URI",
 	"TRUST_GATEWAY_RETURN_URL", "TRUST_GATEWAY_SESSION_TTL", "TRUST_GATEWAY_TSA_AUTH",
-	"TRUST_GATEWAY_TSA_POLICY", "TRUST_GATEWAY_TSA_URL",
+	"TRUST_GATEWAY_TSA_POLICY", "TRUST_GATEWAY_TSA_URL", "TRUST_GATEWAY_UPSTREAM_BASE_URL",
 }
 
 func setEnv(t *testing.T, values map[string]string) {
@@ -107,7 +107,7 @@ func TestLoadRejectsInvalidModeAndRequestDefaults(t *testing.T) {
 	}
 }
 
-func TestAuthenticationFailsClosed(t *testing.T) {
+func TestAuthenticationRequiresAnExplicitPolicy(t *testing.T) {
 	setEnv(t, map[string]string{
 		"TRUST_GATEWAY_BASE_URL": "http://mock:9000",
 		"TRUST_GATEWAY_MODE":     "fixtures",
@@ -129,15 +129,55 @@ func TestAuthenticationFailsClosed(t *testing.T) {
 		t.Fatal("AuthEnabled = true after the explicit fixtures opt-out")
 	}
 
-	for _, apiKey := range []string{"", "also-set"} {
+	t.Run("live explicit network isolation", func(t *testing.T) {
+		env := validLiveEnv()
+		delete(env, "TRUST_GATEWAY_API_KEY")
+		env["TRUST_GATEWAY_AUTH_DISABLED"] = "true"
+		setEnv(t, env)
+		profile, err := Load()
+		if err != nil {
+			t.Fatalf("Load() live network-isolation profile error = %v", err)
+		}
+		if profile.AuthEnabled {
+			t.Fatal("AuthEnabled = true with explicit network isolation")
+		}
+	})
+
+	t.Run("key and network isolation conflict", func(t *testing.T) {
 		env := validLiveEnv()
 		env["TRUST_GATEWAY_AUTH_DISABLED"] = "true"
-		env["TRUST_GATEWAY_API_KEY"] = apiKey
 		setEnv(t, env)
-		if _, err := Load(); err == nil || !strings.Contains(err.Error(), "not allowed in live mode") {
-			t.Fatalf("Load() live auth opt-out error = %v", err)
+		if _, err := Load(); err == nil || !strings.Contains(err.Error(), "both") {
+			t.Fatalf("Load() conflicting auth profile error = %v", err)
 		}
-	}
+	})
+}
+
+func TestLiveUpstreamOverrideIsNonProductionOnly(t *testing.T) {
+	const stubURL = "https://trust-driver-stub-hash-signing.cleverbase.com"
+
+	t.Run("acceptance", func(t *testing.T) {
+		env := validLiveEnv()
+		env["TRUST_GATEWAY_UPSTREAM_BASE_URL"] = stubURL
+		setEnv(t, env)
+		profile, err := Load()
+		if err != nil {
+			t.Fatalf("Load() override error = %v", err)
+		}
+		if profile.SDKUpstreamBaseURL != stubURL {
+			t.Fatalf("SDKUpstreamBaseURL = %q, want %q", profile.SDKUpstreamBaseURL, stubURL)
+		}
+	})
+
+	t.Run("production", func(t *testing.T) {
+		env := validLiveEnv()
+		env["TRUST_GATEWAY_ENV"] = "production"
+		env["TRUST_GATEWAY_UPSTREAM_BASE_URL"] = stubURL
+		setEnv(t, env)
+		if _, err := Load(); err == nil || !strings.Contains(err.Error(), "production") {
+			t.Fatalf("Load() production override error = %v", err)
+		}
+	})
 }
 
 func TestFixturesRequiresBaseURL(t *testing.T) {

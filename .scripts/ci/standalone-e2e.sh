@@ -8,6 +8,7 @@ cd "${repo_root}"
 
 readonly gateway_image="${TRUST_GATEWAY_IMAGE:-alkemio/trust-gateway:latest}"
 readonly mock_image="ghcr.io/alkem-io/cleverbase-refmock@sha256:271f70ee82e8114c0fc03f45788512d5d8f54a9a4fb3c3d7b33057781233fee2"
+readonly mode="${TRUST_GATEWAY_E2E_MODE:-mock}"
 readonly gateway_port="${TRUST_GATEWAY_E2E_GATEWAY_PORT:-18080}"
 readonly mock_port="${TRUST_GATEWAY_E2E_MOCK_PORT:-19000}"
 readonly api_key="trust-gateway-blackbox-e2e"
@@ -15,6 +16,14 @@ readonly suffix="$$"
 readonly network="trust-gateway-e2e-${suffix}"
 readonly mock_name="trust-gateway-e2e-mock-${suffix}"
 readonly gateway_name="trust-gateway-e2e-gateway-${suffix}"
+
+case "${mode}" in
+  mock|stub) ;;
+  *)
+    printf 'TRUST_GATEWAY_E2E_MODE must be mock or stub, got %s\n' "${mode}" >&2
+    exit 2
+    ;;
+esac
 
 cleanup() {
   local status=$?
@@ -47,18 +56,53 @@ wait_ready() {
   return 1
 }
 
-docker pull "${mock_image}" >/dev/null
 if ! docker image inspect "${gateway_image}" >/dev/null 2>&1; then
   docker pull "${gateway_image}" >/dev/null
 fi
 docker network create "${network}" >/dev/null
 
-docker run --detach \
-  --name "${mock_name}" \
-  --network "${network}" \
-  --publish "127.0.0.1:${mock_port}:9000" \
-  "${mock_image}" >/dev/null
-wait_ready "${mock_name}" "http://127.0.0.1:${mock_port}/healthz"
+gateway_env=(
+  --env TRUST_GATEWAY_ENV=acceptance
+  --env TRUST_GATEWAY_CSC_API=v1_rsa
+  --env "TRUST_GATEWAY_REDIRECT_URI=http://127.0.0.1:${gateway_port}/oauth/cleverbase/callback"
+  --env "TRUST_GATEWAY_RETURN_URL=http://127.0.0.1:${gateway_port}/e2e-complete"
+  --env TRUST_GATEWAY_DEFAULT_CONFORMANCE=B-B
+  --env TRUST_GATEWAY_SESSION_TTL=2m
+  --env TRUST_GATEWAY_LISTEN=:8080
+)
+
+case "${mode}" in
+  mock)
+    docker pull "${mock_image}" >/dev/null
+    docker run --detach \
+      --name "${mock_name}" \
+      --network "${network}" \
+      --publish "127.0.0.1:${mock_port}:9000" \
+      "${mock_image}" >/dev/null
+    wait_ready "${mock_name}" "http://127.0.0.1:${mock_port}/healthz"
+    gateway_env+=(
+      --env TRUST_GATEWAY_MODE=fixtures
+      --env TRUST_GATEWAY_CLIENT_ID=trust-gateway-e2e
+      --env TRUST_GATEWAY_CLIENT_SECRET=fixtures
+      --env "TRUST_GATEWAY_BASE_URL=http://${mock_name}:9000"
+      --env "TRUST_GATEWAY_PUBLIC_BASE_URL=http://127.0.0.1:${mock_port}"
+      # The mock's synthetic RFC 3161 endpoint yields a verifiable B-T result when selected.
+      --env "TRUST_GATEWAY_TSA_URL=http://${mock_name}:9000/tsr"
+      --env "TRUST_GATEWAY_API_KEY=${api_key}"
+    )
+    ;;
+  stub)
+    gateway_env+=(
+      --env TRUST_GATEWAY_MODE=live
+      --env TRUST_GATEWAY_CLIENT_ID=6dd5f48d-bcd9-4a98-8a4c-5c82182f5be4
+      --env TRUST_GATEWAY_CLIENT_SECRET=11628999-cb61-4c62-8e1f-09699dcb5521
+      --env TRUST_GATEWAY_UPSTREAM_BASE_URL=https://trust-driver-stub-hash-signing.cleverbase.com
+      # The public stub returns a fake signature, so B-B fails before a TSA request is emitted.
+      --env TRUST_GATEWAY_TSA_URL=https://tsa.invalid
+      --env TRUST_GATEWAY_AUTH_DISABLED=true
+    )
+    ;;
+esac
 
 docker run --detach \
   --name "${gateway_name}" \
@@ -67,26 +111,13 @@ docker run --detach \
   --read-only \
   --security-opt no-new-privileges \
   --cap-drop ALL \
-  --env TRUST_GATEWAY_MODE=fixtures \
-  --env TRUST_GATEWAY_ENV=acceptance \
-  --env TRUST_GATEWAY_CSC_API=v1_rsa \
-  --env TRUST_GATEWAY_CLIENT_ID=trust-gateway-e2e \
-  --env TRUST_GATEWAY_CLIENT_SECRET=fixtures \
-  --env "TRUST_GATEWAY_BASE_URL=http://${mock_name}:9000" \
-  --env "TRUST_GATEWAY_PUBLIC_BASE_URL=http://127.0.0.1:${mock_port}" \
-  --env "TRUST_GATEWAY_REDIRECT_URI=http://127.0.0.1:${gateway_port}/oauth/cleverbase/callback" \
-  --env "TRUST_GATEWAY_RETURN_URL=http://127.0.0.1:${gateway_port}/e2e-complete" \
-  --env "TRUST_GATEWAY_TSA_URL=http://${mock_name}:9000/tsr" \
-  --env "TRUST_GATEWAY_API_KEY=${api_key}" \
-  --env TRUST_GATEWAY_DEFAULT_CONFORMANCE=B-B \
-  --env TRUST_GATEWAY_SESSION_TTL=2m \
-  --env TRUST_GATEWAY_LISTEN=:8080 \
+  "${gateway_env[@]}" \
   "${gateway_image}" >/dev/null
 wait_ready "${gateway_name}" "http://127.0.0.1:${gateway_port}/readyz"
 
 TRUST_GATEWAY_E2E_URL="http://127.0.0.1:${gateway_port}" \
 TRUST_GATEWAY_E2E_API_KEY="${api_key}" \
-TRUST_GATEWAY_E2E_MODE=mock \
+TRUST_GATEWAY_E2E_MODE="${mode}" \
 TRUST_GATEWAY_E2E_REQUIRED=1 \
 CGO_ENABLED=0 \
 go test -v -count=1 ./e2e

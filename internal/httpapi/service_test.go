@@ -89,10 +89,14 @@ func newService(steps []flow.Result, auth bool) *Service {
 		Log:   slog.New(slog.NewTextHandler(io.Discard, nil)),
 		TTL:   time.Minute,
 	}
+	profile := &config.Profile{AuthEnabled: auth, DefaultConformance: "B-B"}
+	if auth {
+		profile.APIKey = "test-key"
+	}
 	return &Service{
 		Engine:  eng,
 		Store:   store,
-		Profile: &config.Profile{AuthEnabled: auth, APIKey: "test-key", DefaultConformance: "B-B"},
+		Profile: profile,
 		Sample:  []byte("%PDF-sample"),
 	}
 }
@@ -138,6 +142,13 @@ func TestAuthRequiredAndHealthOpen(t *testing.T) {
 	}
 	if rec := do(t, h, "GET", "/healthz", "", ""); rec.Code != http.StatusOK {
 		t.Fatalf("health should be open, got %d", rec.Code)
+	}
+}
+
+func TestAuthDisabledLeavesSigningRoutesToNetworkIsolation(t *testing.T) {
+	h := newService(happySteps(), false).Handler()
+	if rec := do(t, h, http.MethodPost, "/v1/sign/start", `{}`, ""); rec.Code != http.StatusOK {
+		t.Fatalf("start without an API key when auth is disabled = %d, want 200: %s", rec.Code, rec.Body)
 	}
 }
 
@@ -197,6 +208,31 @@ func TestFullFlowOverHTTP(t *testing.T) {
 		t.Fatalf("status: %d %s", rec.Code, rec.Body)
 	}
 	requireNoStore(t, rec)
+}
+
+func TestStartReturnsTheStoreExpiry(t *testing.T) {
+	svc := newService(happySteps(), false)
+	before := time.Now().UTC()
+	start := do(t, svc.Handler(), http.MethodPost, "/v1/sign/start", `{}`, "")
+	after := time.Now().UTC()
+	if start.Code != http.StatusOK {
+		t.Fatalf("start: %d %s", start.Code, start.Body)
+	}
+	var response struct {
+		ExpiresAt string `json:"expiresAt"`
+	}
+	if err := json.Unmarshal(start.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode start response: %v", err)
+	}
+	expiresAt, err := time.Parse(time.RFC3339, response.ExpiresAt)
+	if err != nil {
+		t.Fatalf("expiresAt = %q, want RFC 3339 UTC: %v", response.ExpiresAt, err)
+	}
+	// newService gives the engine a one-minute TTL. The JSON contract is second-precision, so allow
+	// the sub-second truncation at the lower bound while still pinning the store's one source of TTL.
+	if expiresAt.Before(before.Add(time.Minute-time.Second)) || expiresAt.After(after.Add(time.Minute)) {
+		t.Fatalf("expiresAt = %s, want the store expiry between %s and %s", expiresAt, before.Add(time.Minute-time.Second), after.Add(time.Minute))
+	}
 }
 
 func TestGatewayCallbackOwnsBothOAuthLegsAndReturnsOpaqueState(t *testing.T) { //nolint:gocyclo // The assertions pin one end-to-end callback contract.

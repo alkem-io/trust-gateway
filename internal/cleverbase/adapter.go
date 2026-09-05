@@ -28,9 +28,12 @@ func New(p *config.Profile) *Adapter {
 		ClientID:     p.ClientID,
 		ClientSecret: p.ClientSecret,
 		RedirectURI:  p.RedirectURI,
-		TsaURL:       p.TSAURL,
-		TsaAuth:      p.TSAAuth,
-		TsaPolicy:    p.TSAPolicy,
+		// UpstreamBaseURL is the SDK's endpoint selector. It is deliberately distinct from the
+		// gateway's fixture-only BASE_URL/PUBLIC_BASE_URL rewrite pair.
+		UpstreamBaseURL: p.SDKUpstreamBaseURL,
+		TsaURL:          p.TSAURL,
+		TsaAuth:         p.TSAAuth,
+		TsaPolicy:       p.TSAPolicy,
 	}}
 }
 
