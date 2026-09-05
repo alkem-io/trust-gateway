@@ -231,6 +231,8 @@ func TestVerifyPDFUsesTheConfiguredPrivateAuthBoundary(t *testing.T) {
 	protected.Engine.SDK.(*scriptSDK).verification = flow.PDFVerification{Reasons: []string{"malformed_pdf"}}
 	if rec := do(t, protected.Handler(), http.MethodPost, "/v1/verify", body, ""); rec.Code != http.StatusUnauthorized {
 		t.Fatalf("verify without API key = %d, want 401", rec.Code)
+	} else {
+		requireNoStore(t, rec)
 	}
 	if rec := do(t, protected.Handler(), http.MethodPost, "/v1/verify", body, "test-key"); rec.Code != http.StatusOK {
 		t.Fatalf("verify with API key = %d %s, want 200", rec.Code, rec.Body)
