@@ -284,6 +284,44 @@ func TestVerifyPDFRejectsInvalidInputBeforeCallingTheSDK(t *testing.T) {
 	}
 }
 
+func TestJSONEndpointsRejectTrailingValuesBeforeAdvancing(t *testing.T) {
+	document := base64.StdEncoding.EncodeToString([]byte("%PDF-signed"))
+	tests := []struct {
+		name   string
+		target string
+		body   string
+		setup  func(*Service)
+	}{
+		{name: "start", target: "/v1/sign/start", body: `{}` + `{}`},
+		{
+			name:   "complete",
+			target: "/v1/sign/complete",
+			body:   `{"state":"oauth-state","code":"code"}` + `{}`,
+			setup: func(svc *Service) {
+				svc.Store.New("correlation", "oauth-state", "client-state", "B-B", time.Minute)
+			},
+		},
+		{name: "verify", target: "/v1/verify", body: `{"document":"` + document + `"}` + `{}`},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			svc := newService(happySteps(), false)
+			if tt.setup != nil {
+				tt.setup(svc)
+			}
+			rec := do(t, svc.Handler(), http.MethodPost, tt.target, tt.body, "")
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("request = %d %s, want 400", rec.Code, rec.Body)
+			}
+			sdk := svc.Engine.SDK.(*scriptSDK)
+			if sdk.i != 0 || sdk.verifiedDocument != nil {
+				t.Fatal("engine advanced for a request with trailing JSON")
+			}
+		})
+	}
+}
+
 func TestVerifyPDFFailureIsLoggedButNotReflected(t *testing.T) {
 	const secretDetail = "ffi internal secret detail"
 	svc := newService(happySteps(), false)
