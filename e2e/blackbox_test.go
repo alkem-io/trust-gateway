@@ -329,22 +329,11 @@ func validateEvidence(encoded string) error {
 
 func verifyCMS(t *testing.T, pdf []byte, cfg testConfig) {
 	t.Helper()
-	matches := byteRangePattern.FindSubmatch(pdf)
-	if matches == nil {
-		t.Fatal("signed PDF lacks /ByteRange")
-	}
-	parts := make([]int, 4)
-	for i := range parts {
-		value, err := strconv.Atoi(string(matches[i+1]))
-		if err != nil {
-			t.Fatalf("invalid ByteRange component: %v", err)
-		}
-		parts[i] = value
+	parts, err := parseByteRange(pdf)
+	if err != nil {
+		t.Fatal(err)
 	}
 	a, b, c, d := parts[0], parts[1], parts[2], parts[3]
-	if a != 0 || b < 0 || c < 0 || d < 0 || a+b > c || c+d > len(pdf) {
-		t.Fatalf("ByteRange out of bounds: %v for %d-byte PDF", parts, len(pdf))
-	}
 	signed := append(append([]byte(nil), pdf[a:a+b]...), pdf[c:c+d]...)
 	cms := extractSignatureContents(t, pdf, a+b, c)
 
@@ -368,6 +357,26 @@ func verifyCMS(t *testing.T, pdf []byte, cfg testConfig) {
 	if output, err := exec.Command("openssl", args...).CombinedOutput(); err != nil {
 		t.Fatalf("OpenSSL rejected the detached CMS: %v\n%s", err, output)
 	}
+}
+
+func parseByteRange(pdf []byte) ([4]int, error) {
+	matches := byteRangePattern.FindSubmatch(pdf)
+	if matches == nil {
+		return [4]int{}, errors.New("signed PDF lacks /ByteRange")
+	}
+	var parts [4]int
+	for i := range parts {
+		value, err := strconv.Atoi(string(matches[i+1]))
+		if err != nil {
+			return [4]int{}, fmt.Errorf("invalid ByteRange component: %w", err)
+		}
+		parts[i] = value
+	}
+	a, b, c, d := parts[0], parts[1], parts[2], parts[3]
+	if a != 0 || b < 0 || c < 0 || d < 0 || a+b > c || c > len(pdf) || d != len(pdf)-c {
+		return [4]int{}, fmt.Errorf("ByteRange does not cover the full PDF: %v for %d-byte PDF", parts, len(pdf))
+	}
+	return parts, nil
 }
 
 func extractSignatureContents(t *testing.T, pdf []byte, gapStart, gapEnd int) []byte {
@@ -426,6 +435,25 @@ func TestExtractSignatureContentsUsesByteRangeGap(t *testing.T) {
 	got := extractSignatureContents(t, pdf, len(pageContents), len(pdf))
 	if !bytes.Equal(got, []byte{0x30, 0x00}) {
 		t.Fatalf("signature contents = %x, want 3000", got)
+	}
+}
+
+func TestParseByteRangeRejectsUnsignedSuffix(t *testing.T) {
+	t.Parallel()
+	declaredLength := 0
+	var pdf []byte
+	for {
+		pdf = fmt.Appendf(nil, "/ByteRange [0 0 0 %d]", declaredLength)
+		if len(pdf) == declaredLength {
+			break
+		}
+		declaredLength = len(pdf)
+	}
+	if _, err := parseByteRange(pdf); err != nil {
+		t.Fatalf("valid full-document ByteRange rejected: %v", err)
+	}
+	if _, err := parseByteRange(append(pdf, 'x')); err == nil {
+		t.Fatal("ByteRange with unsigned suffix accepted")
 	}
 }
 
