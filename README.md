@@ -143,8 +143,11 @@ and DEV are the first deployment targets; TEST is reserved for the later automat
 ### Local Alkemio stack: mock and public stub
 
 The local Alkemio Traefik stack owns `localhost:3000`. It routes only the exact public callback to
-the gateway; `/v1/sign/*` and `/v1/verify` stay on a private Docker ingress network with unrestricted
-egress to Cleverbase and the TSA. For both configurations below use:
+the gateway. In this quickstart, `alkemio-server` runs on the host, so the gateway is published on
+loopback only and also joins the shared dev network, with unrestricted egress to Cleverbase and the
+TSA. The loopback binding keeps the private API off the LAN, but sibling containers on that trusted
+dev network can still reach it; this is an explicit local exception, not production isolation. For
+both configurations below use:
 
 ```dotenv
 TRUST_GATEWAY_REDIRECT_URI=http://localhost:3000/oauth/cleverbase/callback
@@ -155,9 +158,10 @@ TRUST_GATEWAY_SESSION_TTL=15m
 TRUST_GATEWAY_LISTEN=:8080
 ```
 
-`TRUST_GATEWAY_AUTH_DISABLED=true` deliberately removes an Alkemio API-key setting. It is safe only
-when the local Compose network and production `NetworkPolicy` leave `/v1/sign/*` and `/v1/verify`
-reachable to `alkemio-server` alone. Never add a public ingress route for those paths.
+`TRUST_GATEWAY_AUTH_DISABLED=true` deliberately removes an Alkemio API-key setting. The local
+quickstart accepts its trusted shared-network boundary; deployments must enforce a Kubernetes
+`NetworkPolicy` that leaves `/v1/sign/*` and `/v1/verify` reachable to `alkemio-server` alone. Never
+add a public ingress route for those paths.
 
 Use the mock as the primary local fixture. Start the pinned mock image as the Compose service
 `cleverbase-refmock`, expose it to the host on `localhost:9000` for the browser redirect, and give
