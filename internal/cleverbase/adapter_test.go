@@ -157,3 +157,11 @@ func TestToBindingOptions(t *testing.T) {
 		})
 	}
 }
+
+func TestNewForwardsSDKUpstreamBaseURL(t *testing.T) {
+	const stubURL = "https://trust-driver-stub-hash-signing.cleverbase.com"
+	adapter := New(&config.Profile{SDKUpstreamBaseURL: stubURL})
+	if adapter.cfg.UpstreamBaseURL != stubURL {
+		t.Fatalf("binding UpstreamBaseURL = %q, want %q", adapter.cfg.UpstreamBaseURL, stubURL)
+	}
+}
