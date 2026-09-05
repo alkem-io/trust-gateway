@@ -159,7 +159,7 @@ func (profile *Profile) validateStaticFields() error {
 	if profile.CSCAPI != "v1_rsa" && profile.CSCAPI != "v2_ecdsa" {
 		return fmt.Errorf("invalid %s %q (v1_rsa|v2_ecdsa)", envCSCAPI, profile.CSCAPI)
 	}
-	return profile.validateSDKUpstreamPolicy()
+	return nil
 }
 
 func parseSessionTTL(value string) (time.Duration, error) {
@@ -185,13 +185,6 @@ func (profile *Profile) resolveAuth() error {
 		profile.AuthEnabled = false
 	default:
 		return fmt.Errorf("API auth is on by default: set %s, or explicitly set %s=true for network-isolated runs", envAPIKey, envAuthDisabled)
-	}
-	return nil
-}
-
-func (profile *Profile) validateSDKUpstreamPolicy() error {
-	if profile.SDKUpstreamBaseURL != "" && profile.Environment == "production" {
-		return fmt.Errorf("%s is not allowed when %s=production", envSDKUpstreamBaseURL, envEnvironment)
 	}
 	return nil
 }
@@ -264,10 +257,18 @@ func (profile *Profile) validateURLs() (*url.URL, error) {
 		{envPublicBaseURL, profile.PublicUpstreamBaseURL},
 		{envTSAURL, profile.TSAURL},
 	}
+	var publicBaseURL *url.URL
 	for _, item := range values {
-		if _, err := parseAbsoluteURL(item.name, item.value); err != nil {
+		parsed, err := parseAbsoluteURL(item.name, item.value)
+		if err != nil {
 			return nil, err
 		}
+		if item.name == envPublicBaseURL {
+			publicBaseURL = parsed
+		}
+	}
+	if err := profile.validateProductionURLPolicy(publicBaseURL); err != nil {
+		return nil, err
 	}
 	redirectURL, err := parseAbsoluteURL(envRedirectURI, profile.RedirectURI)
 	if err != nil {
@@ -279,6 +280,21 @@ func (profile *Profile) validateURLs() (*url.URL, error) {
 	}
 	profile.ReturnURL = returnURL
 	return redirectURL, nil
+}
+
+// validateProductionURLPolicy is the single source for endpoint overrides that could make a
+// production gateway emit a non-Cleverbase or non-HTTPS browser URL.
+func (profile *Profile) validateProductionURLPolicy(publicBaseURL *url.URL) error {
+	if profile.Environment != "production" {
+		return nil
+	}
+	if profile.SDKUpstreamBaseURL != "" {
+		return fmt.Errorf("%s is not allowed when %s=production", envSDKUpstreamBaseURL, envEnvironment)
+	}
+	if publicBaseURL != nil && publicBaseURL.Scheme != "https" {
+		return fmt.Errorf("%s must use https when %s=production", envPublicBaseURL, envEnvironment)
+	}
+	return nil
 }
 
 func (profile *Profile) validateBrowserFlow(redirectURL *url.URL) error {
