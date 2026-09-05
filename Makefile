@@ -1,9 +1,10 @@
-.PHONY: build docker test lint generate setup-hooks setup-native run clean
+.PHONY: build docker test e2e e2e-live lint generate setup-hooks setup-native run clean
 
 BINARY := trust-gateway
 GO := go
 GOFLAGS := -race -count=1
 COVERAGE_MIN := 95
+UNIT_PACKAGES := ./cmd/... ./internal/...
 
 define with-native
 	lib_dir="$$(.scripts/ci/setup-cleverbase-ffi.sh)" && \
@@ -18,7 +19,7 @@ docker:
 	docker build -t alkemio/trust-gateway:latest .
 
 test:
-	@output="$$( $(call with-native,$(GO) test $(GOFLAGS) -coverprofile=coverage.out -covermode=atomic ./...) 2>&1 )" || \
+	@output="$$( $(call with-native,$(GO) test $(GOFLAGS) -coverprofile=coverage.out -covermode=atomic $(UNIT_PACKAGES)) 2>&1 )" || \
 		{ status=$$?; printf '%s\n' "$${output}"; exit $$status; }; \
 	printf '%s\n' "$${output}"; \
 	failures="$$(printf '%s\n' "$${output}" | awk -v min=$(COVERAGE_MIN) ' \
@@ -30,6 +31,12 @@ test:
 	fi; \
 	total="$$( $(GO) tool cover -func=coverage.out | awk '/^total:/ {gsub(/%/, "", $$3); print $$3}' )"; \
 	printf 'total coverage: %s%%\n' "$${total}"
+
+e2e: docker
+	TRUST_GATEWAY_IMAGE=alkemio/$(BINARY):latest .scripts/e2e/run-mock.sh
+
+e2e-live:
+	CGO_ENABLED=0 TRUST_GATEWAY_E2E_MODE=live $(GO) test -v -count=1 ./e2e
 
 lint:
 	$(call with-native,golangci-lint run)

@@ -15,3 +15,16 @@ jobs:
       run-vet: true
       setup-script: .scripts/ci/setup-cleverbase-ffi.sh
       coverage-min: 95
+
+  manifests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Build Kubernetes base
+        run: kubectl kustomize deploy/k8s/base >/dev/null
