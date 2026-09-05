@@ -6,8 +6,8 @@ requests, and temporary signed-document evidence. The Alkemio server remains aut
 domain authorization, durable signing attempts, immutable source documents, audit, and attachment.
 
 The HTTP contract is documented in [docs/trust-gateway-api.md](docs/trust-gateway-api.md). The only
-public signing route is `GET /oauth/cleverbase/callback`; `/v1/sign/*` stays private and API-key
-protected.
+public signing route is `GET /oauth/cleverbase/callback`; `/v1/sign/*` stays private behind either a
+gateway API key or deployment network isolation.
 
 ## Configuration
 
@@ -28,8 +28,9 @@ profile.
 | `TRUST_GATEWAY_TSA_POLICY` | unset | Optional TSA policy OID. |
 | `TRUST_GATEWAY_BASE_URL` | unset | Internal mock base URL; required in fixtures mode. Live mode does not rewrite SDK URLs. |
 | `TRUST_GATEWAY_PUBLIC_BASE_URL` | `TRUST_GATEWAY_BASE_URL` | Browser-reachable mock base used only to rewrite fixture authorization redirects. |
-| `TRUST_GATEWAY_API_KEY` | unset | Bearer key protecting `/v1/sign/*`; required unless fixtures explicitly disable auth. Mandatory in live mode. |
-| `TRUST_GATEWAY_AUTH_DISABLED` | `false` | May be `true` only for local fixtures. Rejected in live mode. |
+| `TRUST_GATEWAY_UPSTREAM_BASE_URL` | unset | Optional SDK endpoint override for the documented Cleverbase hash-signing stub. It replaces both OAuth and CSC origins, is refused when `TRUST_GATEWAY_ENV=production`, and is warned at startup. `BASE_URL` and `PUBLIC_BASE_URL` remain fixture rewrites. |
+| `TRUST_GATEWAY_API_KEY` | unset | Bearer key protecting `/v1/sign/*`. Set it to enable gateway auth. It cannot be combined with `TRUST_GATEWAY_AUTH_DISABLED=true`. |
+| `TRUST_GATEWAY_AUTH_DISABLED` | `false` | Explicitly disables gateway API-key auth in fixtures or live mode. It requires `/v1/sign/*` to be reachable only on a private network (Kubernetes `NetworkPolicy`; Docker internal network). The gateway logs a startup warning. |
 | `TRUST_GATEWAY_DEFAULT_CONFORMANCE` | `B-B` | Default PAdES level: `B-B` or `B-T`. Requests may override it. |
 | `TRUST_GATEWAY_SESSION_TTL` | `15m` | Lifetime of an in-progress in-memory signing session. |
 | `TRUST_GATEWAY_LISTEN` | `:8080` | HTTP listen address inside the workload. |
@@ -60,7 +61,7 @@ make build
 make docker
 ```
 
-The Go binding is pinned to `bindings/go/v0.1.0`. `make setup-native` downloads the matching
+The Go binding is pinned to `bindings/go/v0.2.1`. `make setup-native` downloads the matching
 Cleverbase FFI archive for the current Go platform and verifies its pinned SHA-256 digest. Build,
 test, lint, run, and container targets all invoke the same setup script; this repository requires no
 Rust toolchain. Unit coverage is gated at 95% for every Go package.
@@ -117,8 +118,8 @@ endpoints:
 | E2E variable | Default | Required / meaning |
 | --- | --- | --- |
 | `TRUST_GATEWAY_E2E_URL` | unset | Private base URL of the deployed gateway. |
-| `TRUST_GATEWAY_E2E_API_KEY` | unset | Bearer key for the private signing routes. |
-| `TRUST_GATEWAY_E2E_MODE` | `mock` | `mock` for automated fixture authorization; `live` for human Cleverbase authorization. |
+| `TRUST_GATEWAY_E2E_API_KEY` | unset | Bearer key for private signing routes. In an explicitly network-isolated deployment with gateway auth disabled, use any non-empty placeholder. |
+| `TRUST_GATEWAY_E2E_MODE` | `mock` | `mock` for the automated synthetic fixture, `stub` for Cleverbase's public fake-signature contract service, or `live` for human Cleverbase authorization. |
 | `TRUST_GATEWAY_E2E_CA_BUNDLE` | unset | CA bundle for live CMS trust validation; required in live mode. |
 | `TRUST_GATEWAY_E2E_TIMEOUT` | `45s` (`5m` live) | Bounded journey timeout. |
 | `TRUST_GATEWAY_E2E_REQUIRED` | unset | Set to `1` in CI/deployment gates so missing prerequisites fail instead of skipping. |
@@ -134,6 +135,62 @@ make e2e-live
 The real-Cleverbase acceptance run is manual because the signer must authorize in the app. SANDBOX
 and DEV are the first deployment targets; TEST is reserved for the later automated nightly run.
 
+### Local Alkemio stack: mock and public stub
+
+The local Alkemio Traefik stack owns `localhost:3000`. It routes only the exact public callback to
+the gateway; `/v1/sign/*` stays on the Docker-internal network. For both configurations below use:
+
+```dotenv
+TRUST_GATEWAY_REDIRECT_URI=http://localhost:3000/oauth/cleverbase/callback
+TRUST_GATEWAY_RETURN_URL=http://localhost:3000/api/public/rest/content-signing/complete
+TRUST_GATEWAY_AUTH_DISABLED=true
+TRUST_GATEWAY_DEFAULT_CONFORMANCE=B-B
+TRUST_GATEWAY_SESSION_TTL=15m
+TRUST_GATEWAY_LISTEN=:8080
+```
+
+`TRUST_GATEWAY_AUTH_DISABLED=true` deliberately removes an Alkemio API-key setting. It is safe only
+when the local Compose network and production `NetworkPolicy` leave `/v1/sign/*` reachable to
+`alkemio-server` alone. Never add a public ingress route for those paths.
+
+Use the mock as the primary local fixture. Start the pinned mock image as the Compose service
+`cleverbase-refmock`, expose it to the host on `localhost:9000` for the browser redirect, and give
+the gateway these additional variables:
+
+```dotenv
+TRUST_GATEWAY_MODE=fixtures
+TRUST_GATEWAY_ENV=acceptance
+TRUST_GATEWAY_CSC_API=v1_rsa
+TRUST_GATEWAY_CLIENT_ID=trust-gateway-fixtures
+TRUST_GATEWAY_CLIENT_SECRET=fixtures
+TRUST_GATEWAY_BASE_URL=http://cleverbase-refmock:9000
+TRUST_GATEWAY_PUBLIC_BASE_URL=http://localhost:9000
+TRUST_GATEWAY_TSA_URL=http://cleverbase-refmock:9000/tsr
+```
+
+The required mock image is
+`ghcr.io/alkem-io/cleverbase-refmock@sha256:271f70ee82e8114c0fc03f45788512d5d8f54a9a4fb3c3d7b33057781233fee2`.
+Its synthetic TSA URL is `http://cleverbase-refmock:9000/tsr`; select B-T to obtain a PDF that the
+black-box test verifies cryptographically with the mock's synthetic PKI.
+
+Use the public Cleverbase hash-signing stub as a protocol contract check, not a signing fixture:
+
+```dotenv
+TRUST_GATEWAY_MODE=live
+TRUST_GATEWAY_ENV=acceptance
+TRUST_GATEWAY_CSC_API=v1_rsa
+TRUST_GATEWAY_CLIENT_ID=6dd5f48d-bcd9-4a98-8a4c-5c82182f5be4
+TRUST_GATEWAY_CLIENT_SECRET=11628999-cb61-4c62-8e1f-09699dcb5521
+TRUST_GATEWAY_UPSTREAM_BASE_URL=https://trust-driver-stub-hash-signing.cleverbase.com
+TRUST_GATEWAY_TSA_URL=https://tsa.invalid
+```
+
+The documented public client values above are test constants, not deployment credentials. The stub
+auto-approves both OAuth legs but deliberately returns a non-cryptographic signature. The gateway
+therefore ends the journey `failed` with reason `signature_invalid`, returns no PDF, and does not
+make a TSA request. This is the expected result; it proves the browser/OAuth/CSC request contract,
+not a cryptographically valid signature or signer identity.
+
 ### First manual acceptance run
 
 This is a gateway-only, local Docker smoke test against Cleverbase acceptance. It signs the bundled
@@ -146,21 +203,33 @@ signing service credential), a user-approved qualified TSA URL, an acceptance si
 Cleverbase Wallet app, and the Cleverbase acceptance issuer/CA bundle in PEM form. The CA bundle is
 mandatory: live E2E intentionally has no `-noverify` or other trust bypass.
 
-Create an env file **outside this repository**, set its permissions to `0600`, and do not commit or
-paste its contents into chat. Replace every angle-bracket value locally. Generate a random API key
-locally, for example with `openssl rand -hex 32`.
+Create the two env files **outside this repository**, set each to `0600`, and do not commit or paste
+their contents into chat. `~/.config/trust-gateway/acceptance_creds.env` contains only the
+Cleverbase client credential pair; `~/.config/trust-gateway/acceptance.env` contains the remaining
+non-Cleverbase-secret settings. Replace every angle-bracket value locally.
+
+```bash
+mkdir -p ~/.config/trust-gateway
+chmod 700 ~/.config/trust-gateway
+touch ~/.config/trust-gateway/acceptance_creds.env ~/.config/trust-gateway/acceptance.env
+chmod 600 ~/.config/trust-gateway/acceptance_creds.env ~/.config/trust-gateway/acceptance.env
+```
 
 ```dotenv
-# /absolute/secure/directory/trust-gateway.acceptance.env
+# ~/.config/trust-gateway/acceptance_creds.env
+TRUST_GATEWAY_CLIENT_ID=<provided-out-of-band>
+TRUST_GATEWAY_CLIENT_SECRET=<provided-out-of-band>
+```
+
+```dotenv
+# ~/.config/trust-gateway/acceptance.env
 TRUST_GATEWAY_MODE=live
 TRUST_GATEWAY_ENV=acceptance
 TRUST_GATEWAY_CSC_API=v1_rsa
-TRUST_GATEWAY_CLIENT_ID=<provided-out-of-band>
-TRUST_GATEWAY_CLIENT_SECRET=<provided-out-of-band>
 TRUST_GATEWAY_REDIRECT_URI=http://localhost:8080/oauth/cleverbase/callback
 TRUST_GATEWAY_RETURN_URL=http://localhost:8080/acceptance-complete
 TRUST_GATEWAY_TSA_URL=https://<user-approved-qualified-tsa>/...
-TRUST_GATEWAY_API_KEY=<locally-generated-random-bearer-key>
+TRUST_GATEWAY_AUTH_DISABLED=true
 TRUST_GATEWAY_DEFAULT_CONFORMANCE=B-B
 TRUST_GATEWAY_SESSION_TTL=15m
 TRUST_GATEWAY_LISTEN=:8080
@@ -177,7 +246,8 @@ docker run --rm --name trust-gateway-acceptance \
   --read-only \
   --security-opt no-new-privileges \
   --cap-drop ALL \
-  --env-file /absolute/secure/directory/trust-gateway.acceptance.env \
+  --env-file ~/.config/trust-gateway/acceptance_creds.env \
+  --env-file ~/.config/trust-gateway/acceptance.env \
   alkemio/trust-gateway:latest
 ```
 
@@ -187,16 +257,14 @@ Wait for a healthy configuration before starting the browser journey:
 curl --fail http://127.0.0.1:8080/readyz
 ```
 
-In a second terminal, source the protected env file only into the current shell, then run the same
-black-box driver used for deployed live runs:
+In a second terminal, run the same black-box driver used for deployed live runs. The direct gateway
+is bound to loopback and explicitly network-isolated, so the driver's API-key variable is a nonempty
+placeholder only; it is not a Cleverbase credential.
 
 ```bash
-set -a
-. /absolute/secure/directory/trust-gateway.acceptance.env
-set +a
 export TRUST_GATEWAY_E2E_URL=http://127.0.0.1:8080
-export TRUST_GATEWAY_E2E_API_KEY="$TRUST_GATEWAY_API_KEY"
-export TRUST_GATEWAY_E2E_CA_BUNDLE=/absolute/secure/directory/cleverbase-acceptance-ca.pem
+export TRUST_GATEWAY_E2E_API_KEY=network-isolated
+export TRUST_GATEWAY_E2E_CA_BUNDLE=~/.config/trust-gateway/cleverbase-acceptance-ca.pem
 export TRUST_GATEWAY_E2E_TIMEOUT=10m
 export TRUST_GATEWAY_E2E_REQUIRED=1
 make e2e-live
