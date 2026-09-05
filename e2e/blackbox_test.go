@@ -24,9 +24,11 @@ import (
 )
 
 const (
-	maxJSONBytes   = 1 << 20
-	maxResultBytes = 21 << 20
-	clientState    = "blackbox-e2e-continuation"
+	maxJSONBytes     = 1 << 20
+	maxResultBytes   = 21 << 20
+	clientState      = "blackbox-e2e-continuation"
+	mockSignerCN     = "Jane Doe"
+	mockSignerSerial = "07FB0DA8384404C33517B852CFE79F04C5006AC1"
 )
 
 var byteRangePattern = regexp.MustCompile(`/ByteRange\s*\[\s*(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s*\]`)
@@ -274,7 +276,7 @@ func assertGatewayVerification(t *testing.T, ctx context.Context, client *http.C
 	t.Helper()
 	valid := verifyThroughGateway(t, ctx, client, cfg, signedPDF)
 	if !valid.Integrity || valid.Profile == nil || *valid.Profile != "B-B" || valid.Signer == nil ||
-		valid.Signer.Serial == "" || valid.Signer.CN == "" || len(valid.Reasons) != 0 {
+		valid.Signer.Serial != mockSignerSerial || valid.Signer.CN != mockSignerCN || len(valid.Reasons) != 0 {
 		t.Fatalf("gateway rejected its signed PDF: %+v", valid)
 	}
 

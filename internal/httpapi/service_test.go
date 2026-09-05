@@ -245,6 +245,14 @@ func TestVerifyPDFUsesTheConfiguredPrivateAuthBoundary(t *testing.T) {
 	}
 }
 
+func TestPrivateAPINotFoundIsNotCacheable(t *testing.T) {
+	rec := do(t, newService(happySteps(), false).Handler(), http.MethodGet, "/v1/not-registered", "", "")
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("unregistered private route = %d, want 404", rec.Code)
+	}
+	requireNoStore(t, rec)
+}
+
 func TestVerifyPDFRejectsInvalidInputBeforeCallingTheSDK(t *testing.T) {
 	tests := []struct {
 		name       string
