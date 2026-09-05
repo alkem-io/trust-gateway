@@ -209,6 +209,12 @@ signing service credential), a user-approved qualified TSA URL, an acceptance si
 Cleverbase Wallet app, and the Cleverbase acceptance issuer/CA bundle in PEM form. The CA bundle is
 mandatory: live E2E intentionally has no `-noverify` or other trust bypass.
 
+Uanataca documents its sandbox RFC 3161 endpoint as
+`https://tsa.sandbox.uanataca.com/tsa/tss03` with HTTP Basic billing credentials. When Cleverbase
+supplies those credentials, set `TRUST_GATEWAY_TSA_AUTH` to the complete
+`Basic <base64(username:password)>` header value; keep the endpoint and policy OID at the values
+Cleverbase confirms rather than hardcoding them.
+
 Create the two env files **outside this repository**, set each to `0600`, and do not commit or paste
 their contents into chat. `~/.config/trust-gateway/acceptance_creds.env` contains only the
 Cleverbase client credential pair; `~/.config/trust-gateway/acceptance.env` contains the remaining
