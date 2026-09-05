@@ -316,7 +316,6 @@ func waitTerminal(t *testing.T, ctx context.Context, client *http.Client, cfg te
 		select {
 		case <-ctx.Done():
 			t.Fatalf("signing did not complete within %s: %v", cfg.timeout, ctx.Err())
-			return statusResponse{}
 		case <-ticker.C:
 		}
 	}

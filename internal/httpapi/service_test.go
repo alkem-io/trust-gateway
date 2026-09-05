@@ -89,10 +89,14 @@ func newService(steps []flow.Result, auth bool) *Service {
 		Log:   slog.New(slog.NewTextHandler(io.Discard, nil)),
 		TTL:   time.Minute,
 	}
+	profile := &config.Profile{AuthEnabled: auth, DefaultConformance: "B-B"}
+	if auth {
+		profile.APIKey = "test-key"
+	}
 	return &Service{
 		Engine:  eng,
 		Store:   store,
-		Profile: &config.Profile{AuthEnabled: auth, APIKey: "test-key", DefaultConformance: "B-B"},
+		Profile: profile,
 		Sample:  []byte("%PDF-sample"),
 	}
 }
