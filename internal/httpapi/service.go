@@ -208,7 +208,6 @@ type verifyRequest struct {
 }
 
 func (s *Service) handleVerify(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Cache-Control", "no-store")
 	r.Body = http.MaxBytesReader(w, r.Body, maxPDFJSONBodyBytes)
 	var req verifyRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -294,7 +293,6 @@ func (s *Service) handleComplete(w http.ResponseWriter, r *http.Request) {
 // OAuth legs: an intermediate result redirects back to Cleverbase; a terminal result redirects to
 // the configured application return URL with only opaque gateway/application references.
 func (s *Service) handleOAuthCallback(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Cache-Control", "no-store")
 	if r.Method == http.MethodHead {
 		w.Header().Set("Allow", http.MethodGet)
 		writeErr(w, http.StatusMethodNotAllowed, "method_not_allowed", "HEAD is not supported")
@@ -406,7 +404,6 @@ func classifyCompleteError(err error) (code int, errCode, msg string, conflict b
 }
 
 func (s *Service) handleStatus(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Cache-Control", "no-store")
 	corr := r.URL.Query().Get("correlationId")
 	v, err := s.Store.ViewByID(corr) // race-free snapshot (the flow engine may be writing concurrently)
 	if err != nil {
@@ -422,7 +419,6 @@ func (s *Service) handleStatus(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Service) handleResult(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Cache-Control", "no-store")
 	corr := r.URL.Query().Get("correlationId")
 	v, err := s.Store.ViewByID(corr)
 	if err != nil {
