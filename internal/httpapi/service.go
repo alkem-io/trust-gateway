@@ -15,6 +15,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"time"
 
 	"github.com/alkem-io/trust-gateway/internal/config"
 	"github.com/alkem-io/trust-gateway/internal/flow"
@@ -186,7 +187,7 @@ func (s *Service) handleStart(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, "internal_error", "internal server error")
 		return
 	}
-	redirectURL, err := s.Engine.Begin(corr, doc, conformance, req.ClientState, opts)
+	redirectURL, expiresAt, err := s.Engine.Begin(corr, doc, conformance, req.ClientState, opts)
 	if err != nil {
 		// Do not surface the upstream/SDK error text to the client (it can leak internal/session
 		// detail); log it server-side and return a stable generic message with the same status.
@@ -194,7 +195,11 @@ func (s *Service) handleStart(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, "begin_failed", "could not start signing session")
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"redirectUrl": redirectURL, "correlationId": corr})
+	writeJSON(w, http.StatusOK, map[string]string{
+		"redirectUrl":   redirectURL,
+		"correlationId": corr,
+		"expiresAt":     expiresAt.UTC().Format(time.RFC3339),
+	})
 }
 
 type completeRequest struct {

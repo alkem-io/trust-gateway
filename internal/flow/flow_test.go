@@ -89,7 +89,7 @@ func TestFullHappyFlow(t *testing.T) {
 		done([]byte("%PDF-signed")),
 	})
 
-	url, err := e.Begin("corr-1", []byte("%PDF"), "B-B", "opaque-client-state", nil)
+	url, _, err := e.Begin("corr-1", []byte("%PDF"), "B-B", "opaque-client-state", nil)
 	if err != nil || url == "" {
 		t.Fatalf("begin: %v url=%q", err, url)
 	}
@@ -121,6 +121,21 @@ func TestFullHappyFlow(t *testing.T) {
 	}
 }
 
+func TestBeginReturnsTheStoreExpiry(t *testing.T) {
+	e, _ := newEngine([]Result{redirect("https://cb/oauth2/authorize", "state")})
+	_, expiresAt, err := e.Begin("corr", []byte("%PDF"), "B-B", "", nil)
+	if err != nil {
+		t.Fatalf("Begin() error = %v", err)
+	}
+	session, err := e.Store.GetByState("state")
+	if err != nil {
+		t.Fatalf("GetByState() error = %v", err)
+	}
+	if !expiresAt.Equal(session.ExpiresAt) {
+		t.Fatalf("Begin() expiry = %s, store expiry = %s", expiresAt, session.ExpiresAt)
+	}
+}
+
 func TestOutcomeMappingAllDistinct(t *testing.T) {
 	cases := map[string]struct {
 		status session.Status
@@ -141,7 +156,7 @@ func TestOutcomeMappingAllDistinct(t *testing.T) {
 			redirect("https://cb/oauth2/authorize", "s1"),
 			failed(outcome),
 		})
-		_, _ = e.Begin("c", []byte("%PDF"), "B-B", "", nil)
+		_, _, _ = e.Begin("c", []byte("%PDF"), "B-B", "", nil)
 		s, _ := e.Store.GetByState("s1")
 		st, _, reason, err := e.Complete(context.Background(), s, "code", "s1")
 		if err != nil {
@@ -167,7 +182,7 @@ func (errEffector) Rewrite(u string) string { return u }
 
 func TestCompleteErrorDeclined(t *testing.T) {
 	e, _ := newEngine([]Result{redirect("https://cb/a", "s1"), failed("declined")})
-	_, _ = e.Begin("c", []byte("%PDF"), "B-B", "", nil)
+	_, _, _ = e.Begin("c", []byte("%PDF"), "B-B", "", nil)
 	s, _ := e.Store.GetByState("s1")
 	st, _, reason, err := e.CompleteError(context.Background(), s, "access_denied", "s1")
 	if err != nil || st != session.StatusDeclined || reason != "declined" {
@@ -186,7 +201,7 @@ func TestUpstreamErrorBecomesFailed(t *testing.T) {
 		Log:   slog.New(slog.NewTextHandler(io.Discard, nil)),
 		TTL:   time.Minute,
 	}
-	_, _ = e.Begin("c", []byte("%PDF"), "B-B", "", nil)
+	_, _, _ = e.Begin("c", []byte("%PDF"), "B-B", "", nil)
 	s, _ := e.Store.GetByState("s1")
 	st, _, reason, err := e.Complete(context.Background(), s, "code", "s1")
 	if err != nil || st != session.StatusFailed || reason != "upstream_error" {
@@ -196,7 +211,7 @@ func TestUpstreamErrorBecomesFailed(t *testing.T) {
 
 func TestBeginUnexpectedStepIsError(t *testing.T) {
 	e, _ := newEngine([]Result{performHTTP("https://cb/x")})
-	if _, err := e.Begin("c", []byte("%PDF"), "B-B", "", nil); err == nil {
+	if _, _, err := e.Begin("c", []byte("%PDF"), "B-B", "", nil); err == nil {
 		t.Fatal("begin with a non-redirect first step should error")
 	}
 }
@@ -204,7 +219,7 @@ func TestBeginUnexpectedStepIsError(t *testing.T) {
 func TestBeginWithExpectedSignerOption(t *testing.T) {
 	e, _ := newEngine([]Result{redirect("https://cb/a", "s1")})
 	opts := &Options{ExpectedSignerMatchOn: "certificate_serial_number", ExpectedSignerValue: "PNONL-123"}
-	if _, err := e.Begin("c", []byte("%PDF"), "B-B", "client-state", opts); err != nil {
+	if _, _, err := e.Begin("c", []byte("%PDF"), "B-B", "client-state", opts); err != nil {
 		t.Fatalf("begin with opts: %v", err)
 	}
 }
@@ -234,7 +249,7 @@ func TestEvidenceMarshalFailureFailsSession(t *testing.T) {
 			"evidence": make(chan int),
 		}},
 	})
-	_, _ = e.Begin("corr", []byte("%PDF"), "B-B", "", nil)
+	_, _, _ = e.Begin("corr", []byte("%PDF"), "B-B", "", nil)
 	sess, _ := e.Store.GetByState("state")
 	if _, _, _, err := e.Complete(context.Background(), sess, "code", "state"); err == nil {
 		t.Fatal("Complete() silently accepted evidence that cannot be serialized")
@@ -252,7 +267,7 @@ func TestFailedEvidenceMarshalFailureFailsSession(t *testing.T) {
 			"kind": "failed", "evidence": make(chan int),
 		}},
 	})
-	_, _ = e.Begin("corr", []byte("%PDF"), "B-B", "", nil)
+	_, _, _ = e.Begin("corr", []byte("%PDF"), "B-B", "", nil)
 	sess, _ := e.Store.GetByState("state")
 	if _, _, _, err := e.Complete(context.Background(), sess, "code", "state"); err == nil {
 		t.Fatal("Complete() silently accepted failed evidence that cannot be serialized")
@@ -321,26 +336,26 @@ func TestStepHelpers(t *testing.T) {
 func TestResumeErrorsPropagate(t *testing.T) {
 	// Begin SDK error (empty script → io.EOF).
 	e, _ := newEngine(nil)
-	if _, err := e.Begin("c", []byte("%PDF"), "B-B", "", nil); err == nil {
+	if _, _, err := e.Begin("c", []byte("%PDF"), "B-B", "", nil); err == nil {
 		t.Fatal("begin SDK error should propagate")
 	}
 	// Complete resume error (begin redirect, then exhausted).
 	e2, _ := newEngine([]Result{redirect("https://cb/a", "s1")})
-	_, _ = e2.Begin("c", []byte("%PDF"), "B-B", "", nil)
+	_, _, _ = e2.Begin("c", []byte("%PDF"), "B-B", "", nil)
 	s2, _ := e2.Store.GetByState("s1")
 	if _, _, _, err := e2.Complete(context.Background(), s2, "code", "s1"); err == nil {
 		t.Fatal("complete resume error should propagate")
 	}
 	// ResumeHTTP error inside drive (begin redirect, one perform_http, then exhausted).
 	e3, _ := newEngine([]Result{redirect("https://cb/a", "s1"), performHTTP("https://cb/t")})
-	_, _ = e3.Begin("c", []byte("%PDF"), "B-B", "", nil)
+	_, _, _ = e3.Begin("c", []byte("%PDF"), "B-B", "", nil)
 	s3, _ := e3.Store.GetByState("s1")
 	if _, _, _, err := e3.Complete(context.Background(), s3, "code", "s1"); err == nil {
 		t.Fatal("resume-http error should propagate")
 	}
 	// CompleteError resume error.
 	e4, _ := newEngine([]Result{redirect("https://cb/a", "s1")})
-	_, _ = e4.Begin("c", []byte("%PDF"), "B-B", "", nil)
+	_, _, _ = e4.Begin("c", []byte("%PDF"), "B-B", "", nil)
 	s4, _ := e4.Store.GetByState("s1")
 	if _, _, _, err := e4.CompleteError(context.Background(), s4, "x", "s1"); err == nil {
 		t.Fatal("complete-error resume error should propagate")
@@ -390,7 +405,7 @@ func TestConcurrentDuplicateCallbackDoesNotDoubleResume(t *testing.T) {
 		Log:   slog.New(slog.NewTextHandler(io.Discard, nil)),
 		TTL:   time.Minute,
 	}
-	if _, err := e.Begin("c", []byte("%PDF"), "B-B", "", nil); err != nil {
+	if _, _, err := e.Begin("c", []byte("%PDF"), "B-B", "", nil); err != nil {
 		t.Fatalf("begin: %v", err)
 	}
 	s, _ := e.Store.GetByState("s1")
@@ -431,7 +446,7 @@ func TestConcurrentDuplicateCallbackDoesNotDoubleResume(t *testing.T) {
 
 func TestCompleteOnTerminalRejected(t *testing.T) {
 	e, _ := newEngine([]Result{redirect("https://cb/a", "s1"), failed("invalid_document")})
-	_, _ = e.Begin("c", []byte("%PDF"), "B-B", "", nil)
+	_, _, _ = e.Begin("c", []byte("%PDF"), "B-B", "", nil)
 	s, _ := e.Store.GetByState("s1")
 	_, _, _, _ = e.Complete(context.Background(), s, "code", "s1") // → terminal failed
 	if _, _, _, err := e.Complete(context.Background(), s, "code", "s1"); !errors.Is(err, ErrTerminal) {
@@ -455,7 +470,7 @@ func TestDriveFailsFastOnMalformedSteps(t *testing.T) {
 				redirect("https://cb/oauth2/authorize?scope=service", "s1"),
 				{Handle: []byte("h"), Step: tc.step},
 			})
-			if _, err := e.Begin("corr-1", []byte("%PDF"), "B-B", "", nil); err != nil {
+			if _, _, err := e.Begin("corr-1", []byte("%PDF"), "B-B", "", nil); err != nil {
 				t.Fatalf("begin: %v", err)
 			}
 			s, _ := e.Store.GetByState("s1")
@@ -472,7 +487,7 @@ func TestDriveFailsFastOnMalformedSteps(t *testing.T) {
 // TestBeginFailsFastOnMalformedRedirect proves begin rejects a redirect step missing its state.
 func TestBeginFailsFastOnMalformedRedirect(t *testing.T) {
 	e, _ := newEngine([]Result{{Handle: []byte("h"), Step: map[string]any{"kind": "redirect", "url": "u"}}})
-	if _, err := e.Begin("corr-1", []byte("%PDF"), "B-B", "", nil); err == nil {
+	if _, _, err := e.Begin("corr-1", []byte("%PDF"), "B-B", "", nil); err == nil {
 		t.Fatal("begin with a malformed redirect (no state) should error")
 	}
 }

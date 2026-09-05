@@ -199,6 +199,31 @@ func TestFullFlowOverHTTP(t *testing.T) {
 	requireNoStore(t, rec)
 }
 
+func TestStartReturnsTheStoreExpiry(t *testing.T) {
+	svc := newService(happySteps(), false)
+	before := time.Now().UTC()
+	start := do(t, svc.Handler(), http.MethodPost, "/v1/sign/start", `{}`, "")
+	after := time.Now().UTC()
+	if start.Code != http.StatusOK {
+		t.Fatalf("start: %d %s", start.Code, start.Body)
+	}
+	var response struct {
+		ExpiresAt string `json:"expiresAt"`
+	}
+	if err := json.Unmarshal(start.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode start response: %v", err)
+	}
+	expiresAt, err := time.Parse(time.RFC3339, response.ExpiresAt)
+	if err != nil {
+		t.Fatalf("expiresAt = %q, want RFC 3339 UTC: %v", response.ExpiresAt, err)
+	}
+	// newService gives the engine a one-minute TTL. The JSON contract is second-precision, so allow
+	// the sub-second truncation at the lower bound while still pinning the store's one source of TTL.
+	if expiresAt.Before(before.Add(time.Minute-time.Second)) || expiresAt.After(after.Add(time.Minute)) {
+		t.Fatalf("expiresAt = %s, want the store expiry between %s and %s", expiresAt, before.Add(time.Minute-time.Second), after.Add(time.Minute))
+	}
+}
+
 func TestGatewayCallbackOwnsBothOAuthLegsAndReturnsOpaqueState(t *testing.T) { //nolint:gocyclo // The assertions pin one end-to-end callback contract.
 	const (
 		returnURL   = "https://alkemio.example/api/public/rest/content-signing/complete"
