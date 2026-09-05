@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -24,8 +25,11 @@ import (
 // --- test doubles (implement flow.SDK / flow.Effector, cgo-free) ---
 
 type scriptSDK struct {
-	steps []flow.Result
-	i     int
+	steps            []flow.Result
+	i                int
+	verification     *flow.PDFVerification
+	verificationErr  error
+	verifiedDocument []byte
 }
 
 func (s *scriptSDK) next() (flow.Result, error) {
@@ -40,6 +44,10 @@ func (s *scriptSDK) Begin([]byte, string, *flow.Options) (flow.Result, error)   
 func (s *scriptSDK) ResumeRedirect([]byte, string, string) (flow.Result, error)      { return s.next() }
 func (s *scriptSDK) ResumeRedirectError([]byte, string, string) (flow.Result, error) { return s.next() }
 func (s *scriptSDK) ResumeHTTP([]byte, int, []byte) (flow.Result, error)             { return s.next() }
+func (s *scriptSDK) VerifyPDF(document []byte) (*flow.PDFVerification, error) {
+	s.verifiedDocument = append([]byte(nil), document...)
+	return s.verification, s.verificationErr
+}
 
 type nopEffector struct{}
 
@@ -149,6 +157,136 @@ func TestAuthDisabledLeavesSigningRoutesToNetworkIsolation(t *testing.T) {
 	h := newService(happySteps(), false).Handler()
 	if rec := do(t, h, http.MethodPost, "/v1/sign/start", `{}`, ""); rec.Code != http.StatusOK {
 		t.Fatalf("start without an API key when auth is disabled = %d, want 200: %s", rec.Code, rec.Body)
+	}
+}
+
+func TestVerifyPDFContract(t *testing.T) {
+	profile := "B-T"
+	tests := []struct {
+		name string
+		want *flow.PDFVerification
+	}{
+		{
+			name: "valid",
+			want: &flow.PDFVerification{
+				Integrity: true,
+				Profile:   &profile,
+				Signer:    &flow.PDFSigner{Serial: "CERT-123", CN: "Ada Signer"},
+				Reasons:   []string{},
+			},
+		},
+		{
+			name: "invalid",
+			want: &flow.PDFVerification{
+				Integrity: false,
+				Profile:   nil,
+				Signer:    nil,
+				Reasons:   []string{"message_digest_mismatch"},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			svc := newService(happySteps(), false)
+			sdk := svc.Engine.SDK.(*scriptSDK)
+			sdk.verification = tt.want
+			document := []byte("%PDF-signed")
+			body, err := json.Marshal(map[string]string{"document": base64.StdEncoding.EncodeToString(document)})
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			rec := do(t, svc.Handler(), http.MethodPost, "/v1/verify", string(body), "")
+			if rec.Code != http.StatusOK {
+				t.Fatalf("verify = %d %s", rec.Code, rec.Body)
+			}
+			requireNoStore(t, rec)
+			if !reflect.DeepEqual(sdk.verifiedDocument, document) {
+				t.Fatalf("SDK document = %q, want %q", sdk.verifiedDocument, document)
+			}
+			var got flow.PDFVerification
+			if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+				t.Fatalf("decode verify response: %v", err)
+			}
+			if !reflect.DeepEqual(&got, tt.want) {
+				t.Fatalf("verify response = %#v, want %#v", &got, tt.want)
+			}
+			var shape map[string]json.RawMessage
+			if err := json.Unmarshal(rec.Body.Bytes(), &shape); err != nil {
+				t.Fatal(err)
+			}
+			if len(shape) != 4 {
+				t.Fatalf("verify response fields = %v, want exactly integrity/profile/signer/reasons", shape)
+			}
+		})
+	}
+}
+
+func TestVerifyPDFUsesTheConfiguredPrivateAuthBoundary(t *testing.T) {
+	document := base64.StdEncoding.EncodeToString([]byte("%PDF-signed"))
+	body := `{"document":"` + document + `"}`
+
+	protected := newService(happySteps(), true)
+	protected.Engine.SDK.(*scriptSDK).verification = &flow.PDFVerification{Reasons: []string{"malformed_pdf"}}
+	if rec := do(t, protected.Handler(), http.MethodPost, "/v1/verify", body, ""); rec.Code != http.StatusUnauthorized {
+		t.Fatalf("verify without API key = %d, want 401", rec.Code)
+	}
+	if rec := do(t, protected.Handler(), http.MethodPost, "/v1/verify", body, "test-key"); rec.Code != http.StatusOK {
+		t.Fatalf("verify with API key = %d %s, want 200", rec.Code, rec.Body)
+	}
+
+	isolated := newService(happySteps(), false)
+	isolated.Engine.SDK.(*scriptSDK).verification = &flow.PDFVerification{Reasons: []string{"malformed_pdf"}}
+	if rec := do(t, isolated.Handler(), http.MethodPost, "/v1/verify", body, ""); rec.Code != http.StatusOK {
+		t.Fatalf("verify with explicit network-isolation auth mode = %d %s, want 200", rec.Code, rec.Body)
+	}
+}
+
+func TestVerifyPDFRejectsInvalidInputBeforeCallingTheSDK(t *testing.T) {
+	tests := []struct {
+		name       string
+		body       string
+		wantStatus int
+	}{
+		{name: "malformed JSON", body: "{", wantStatus: http.StatusBadRequest},
+		{name: "missing document", body: `{}`, wantStatus: http.StatusBadRequest},
+		{name: "invalid base64", body: `{"document":"not-base64"}`, wantStatus: http.StatusBadRequest},
+		{
+			name:       "document too large",
+			body:       `{"document":"` + base64.StdEncoding.EncodeToString(make([]byte, maxPDFBytes+1)) + `"}`,
+			wantStatus: http.StatusRequestEntityTooLarge,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			svc := newService(happySteps(), false)
+			sdk := svc.Engine.SDK.(*scriptSDK)
+			rec := do(t, svc.Handler(), http.MethodPost, "/v1/verify", tt.body, "")
+			if rec.Code != tt.wantStatus {
+				t.Fatalf("verify = %d %s, want %d", rec.Code, rec.Body, tt.wantStatus)
+			}
+			if sdk.verifiedDocument != nil {
+				t.Fatalf("SDK called with invalid document: %d bytes", len(sdk.verifiedDocument))
+			}
+		})
+	}
+}
+
+func TestVerifyPDFFailureIsLoggedButNotReflected(t *testing.T) {
+	const secretDetail = "ffi internal secret detail"
+	svc := newService(happySteps(), false)
+	svc.Engine.SDK.(*scriptSDK).verificationErr = errors.New(secretDetail)
+	var logs strings.Builder
+	svc.Log = slog.New(slog.NewTextHandler(&logs, nil))
+	body := `{"document":"` + base64.StdEncoding.EncodeToString([]byte("%PDF")) + `"}`
+	rec := do(t, svc.Handler(), http.MethodPost, "/v1/verify", body, "")
+	if rec.Code != http.StatusInternalServerError || strings.Contains(rec.Body.String(), secretDetail) {
+		t.Fatalf("verify failure = %d %s", rec.Code, rec.Body)
+	}
+	if !strings.Contains(logs.String(), secretDetail) {
+		t.Fatalf("internal error missing from logs: %s", logs.String())
 	}
 }
 
