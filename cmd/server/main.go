@@ -67,6 +67,11 @@ func run(ctx context.Context, logger *slog.Logger) error {
 		// per-route bypass: deployment network policy is therefore the single enforcement boundary.
 		logger.Warn("API authentication is disabled; /v1/sign/* must be network-isolated", "mode", string(p.Mode))
 	}
+	if p.SDKUpstreamBaseURL != "" {
+		// The SDK validates the URL itself. Do not log the value: malformed future inputs could carry
+		// userinfo, and the operational signal is sufficient for an intentional development override.
+		logger.Warn("Cleverbase upstream endpoint is overridden; production use is refused", "environment", p.Environment)
+	}
 
 	store := session.NewMemory()
 	var internalRewrite, publicRewrite string

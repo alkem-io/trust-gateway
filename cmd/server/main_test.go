@@ -170,6 +170,21 @@ func TestRunWarnsWhenLiveAPIRoutesAreNetworkIsolated(t *testing.T) {
 	}
 }
 
+func TestRunWarnsWhenCleverbaseUpstreamIsOverridden(t *testing.T) {
+	liveNetworkIsolatedRuntime(t)
+	t.Setenv("TRUST_GATEWAY_UPSTREAM_BASE_URL", "https://trust-driver-stub-hash-signing.cleverbase.com")
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	var logs bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logs, nil))
+	if err := run(ctx, logger); err != nil {
+		t.Fatalf("run() error = %v", err)
+	}
+	if !strings.Contains(logs.String(), "Cleverbase upstream endpoint is overridden") {
+		t.Fatalf("upstream override warning missing from logs: %s", logs.String())
+	}
+}
+
 func TestRunMainRunsUntilSignal(t *testing.T) {
 	fixtureRuntime(t)
 	address := captureListenAddress(t)
