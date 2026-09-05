@@ -46,9 +46,9 @@ profile.
 | local | `acceptance` | `connect.acc.cleverbase.com` |
 
 Never derive `TRUST_GATEWAY_ENV` from the Alkemio overlay name: the Alkemio SANDBOX overlay still
-uses Cleverbase pre-production (`acceptance`). Each Alkemio environment receives its own Cleverbase
-client ID and secret even when several environments use the same Cleverbase tier. CSC v2 remains on
-Cleverbase's single lab host as defined by the SDK.
+uses Cleverbase pre-production (`acceptance`). Non-production environments, including local, share
+Alkemio's existing acceptance client; production has its own client. CSC v2 remains on Cleverbase's
+single lab host as defined by the SDK.
 
 ## Development
 
@@ -133,3 +133,87 @@ make e2e-live
 
 The real-Cleverbase acceptance run is manual because the signer must authorize in the app. SANDBOX
 and DEV are the first deployment targets; TEST is reserved for the later automated nightly run.
+
+### First manual acceptance run
+
+This is a gateway-only, local Docker smoke test against Cleverbase acceptance. It signs the bundled
+sample PDF as PAdES B-B/RSA, validates the returned CMS with OpenSSL, and never writes credentials
+or the signed PDF to the repository. It is not the Alkemio-integrated local route: that route stays
+on `localhost:3000` behind the local Traefik stack.
+
+Before starting, obtain out of band: the existing Alkemio acceptance client ID and secret (with the
+signing service credential), a user-approved qualified TSA URL, an acceptance signer enrolled in the
+Cleverbase Wallet app, and the Cleverbase acceptance issuer/CA bundle in PEM form. The CA bundle is
+mandatory: live E2E intentionally has no `-noverify` or other trust bypass.
+
+Create an env file **outside this repository**, set its permissions to `0600`, and do not commit or
+paste its contents into chat. Replace every angle-bracket value locally. Generate a random API key
+locally, for example with `openssl rand -hex 32`.
+
+```dotenv
+# /absolute/secure/directory/trust-gateway.acceptance.env
+TRUST_GATEWAY_MODE=live
+TRUST_GATEWAY_ENV=acceptance
+TRUST_GATEWAY_CSC_API=v1_rsa
+TRUST_GATEWAY_CLIENT_ID=<provided-out-of-band>
+TRUST_GATEWAY_CLIENT_SECRET=<provided-out-of-band>
+TRUST_GATEWAY_REDIRECT_URI=http://localhost:8080/oauth/cleverbase/callback
+TRUST_GATEWAY_RETURN_URL=http://localhost:8080/acceptance-complete
+TRUST_GATEWAY_TSA_URL=https://<user-approved-qualified-tsa>/...
+TRUST_GATEWAY_API_KEY=<locally-generated-random-bearer-key>
+TRUST_GATEWAY_DEFAULT_CONFORMANCE=B-B
+TRUST_GATEWAY_SESSION_TTL=15m
+TRUST_GATEWAY_LISTEN=:8080
+```
+
+Build the image and start the gateway in one terminal. This direct local mode uses port 8080 because
+it does not start Alkemio's Traefik stack; the acceptance client's unrestricted localhost redirect
+allows the callback URL above.
+
+```bash
+make docker
+docker run --rm --name trust-gateway-acceptance \
+  --publish 127.0.0.1:8080:8080 \
+  --read-only \
+  --security-opt no-new-privileges \
+  --cap-drop ALL \
+  --env-file /absolute/secure/directory/trust-gateway.acceptance.env \
+  alkemio/trust-gateway:latest
+```
+
+Wait for a healthy configuration before starting the browser journey:
+
+```bash
+curl --fail http://127.0.0.1:8080/readyz
+```
+
+In a second terminal, source the protected env file only into the current shell, then run the same
+black-box driver used for deployed live runs:
+
+```bash
+set -a
+. /absolute/secure/directory/trust-gateway.acceptance.env
+set +a
+export TRUST_GATEWAY_E2E_URL=http://127.0.0.1:8080
+export TRUST_GATEWAY_E2E_API_KEY="$TRUST_GATEWAY_API_KEY"
+export TRUST_GATEWAY_E2E_CA_BUNDLE=/absolute/secure/directory/cleverbase-acceptance-ca.pem
+export TRUST_GATEWAY_E2E_TIMEOUT=10m
+export TRUST_GATEWAY_E2E_REQUIRED=1
+make e2e-live
+```
+
+The test prints the first Cleverbase authorization URL. Open it in a browser on this machine and
+complete both Cleverbase steps with the enrolled Wallet signer. The expected path is:
+
+1. Cleverbase redirects the browser to `http://localhost:8080/oauth/cleverbase/callback` after the
+   first authorization.
+2. The gateway validates that state and responds with a redirect to Cleverbase's second
+   authorization/signing step.
+3. Cleverbase redirects to the same gateway callback again after Wallet approval. The gateway marks
+   the session complete, then redirects to `/acceptance-complete` with only `correlationId` and
+   `clientState`.
+
+In this gateway-only smoke run, the final local return URL has no Alkemio handler, so the browser may
+show `404` after completion. That is expected; the E2E driver polls the private status endpoint,
+retrieves the result, verifies the CMS against the supplied acceptance CA bundle, and finishes with
+`PASS`. Stop the container with `docker stop trust-gateway-acceptance` when finished.
