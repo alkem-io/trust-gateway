@@ -123,13 +123,28 @@ type startRequest struct {
 	ClientState      string               `json:"clientState"`
 }
 
+func decodeSingleJSON(body io.Reader, target any) error {
+	decoder := json.NewDecoder(body)
+	if err := decoder.Decode(target); err != nil {
+		return err
+	}
+	var trailing json.RawMessage
+	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
+		if err != nil {
+			return err
+		}
+		return errors.New("multiple JSON values")
+	}
+	return nil
+}
+
 func (s *Service) handleStart(w http.ResponseWriter, r *http.Request) {
 	// Bound the body before reading it so a client cannot force a huge allocation decoding the JSON
 	// (which carries the base64 document). MaxBytesReader trips the decode with an *http.MaxBytesError
 	// once the cap is exceeded.
 	r.Body = http.MaxBytesReader(w, r.Body, maxPDFJSONBodyBytes)
 	var req startRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeSingleJSON(r.Body, &req); err != nil {
 		var maxErr *http.MaxBytesError
 		if errors.As(err, &maxErr) {
 			writeErr(w, http.StatusRequestEntityTooLarge, "payload_too_large", "request body too large")
@@ -210,7 +225,7 @@ type verifyRequest struct {
 func (s *Service) handleVerify(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, maxPDFJSONBodyBytes)
 	var req verifyRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeSingleJSON(r.Body, &req); err != nil {
 		var maxErr *http.MaxBytesError
 		if errors.As(err, &maxErr) {
 			writeErr(w, http.StatusRequestEntityTooLarge, "payload_too_large", "request body too large")
@@ -263,7 +278,7 @@ var (
 func (s *Service) handleComplete(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, maxCompleteBodyBytes)
 	var req completeRequest
-	err := json.NewDecoder(r.Body).Decode(&req)
+	err := decodeSingleJSON(r.Body, &req)
 	var maxErr *http.MaxBytesError
 	if errors.As(err, &maxErr) {
 		writeErr(w, http.StatusRequestEntityTooLarge, "payload_too_large", "request body too large")

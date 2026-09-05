@@ -30,7 +30,7 @@ profile.
 | `TRUST_GATEWAY_PUBLIC_BASE_URL` | `TRUST_GATEWAY_BASE_URL` | Browser-reachable mock base used only to rewrite fixture authorization redirects. |
 | `TRUST_GATEWAY_UPSTREAM_BASE_URL` | unset | Optional SDK endpoint override for the documented Cleverbase hash-signing stub. It replaces both OAuth and CSC origins, is refused when `TRUST_GATEWAY_ENV=production`, and is warned at startup. `BASE_URL` and `PUBLIC_BASE_URL` remain fixture rewrites. |
 | `TRUST_GATEWAY_API_KEY` | unset | Bearer key protecting `/v1/sign/*` and `/v1/verify`. Set it to enable gateway auth. It cannot be combined with `TRUST_GATEWAY_AUTH_DISABLED=true`. |
-| `TRUST_GATEWAY_AUTH_DISABLED` | `false` | Explicitly disables gateway API-key auth in fixtures or live mode. It requires private ingress to `/v1/sign/*` and `/v1/verify` (Kubernetes `NetworkPolicy`; Docker private network) while retaining egress to Cleverbase and the TSA. The gateway logs a startup warning. |
+| `TRUST_GATEWAY_AUTH_DISABLED` | `false` | Explicitly disables gateway API-key auth in fixtures or live mode. Kubernetes `NetworkPolicy` must admit only approved sources to gateway port 8080; the Ingress or proxy must expose only the exact public callback and no `/v1/sign/*` or `/v1/verify` route. Egress to Cleverbase and the TSA remains required. The gateway logs a startup warning. |
 | `TRUST_GATEWAY_DEFAULT_CONFORMANCE` | `B-B` | Default PAdES level: `B-B` or `B-T`. Requests may override it. |
 | `TRUST_GATEWAY_SESSION_TTL` | `15m` | Lifetime of an in-progress in-memory signing session. |
 | `TRUST_GATEWAY_LISTEN` | `:8080` | HTTP listen address inside the workload. |
@@ -160,8 +160,9 @@ TRUST_GATEWAY_LISTEN=:8080
 
 `TRUST_GATEWAY_AUTH_DISABLED=true` deliberately removes an Alkemio API-key setting. The local
 quickstart accepts its trusted shared-network boundary; deployments must enforce a Kubernetes
-`NetworkPolicy` that leaves `/v1/sign/*` and `/v1/verify` reachable to `alkemio-server` alone. Never
-add a public ingress route for those paths.
+`NetworkPolicy` that admits only `alkemio-server` and the ingress controller to gateway port 8080.
+The Ingress or proxy must publish only the exact Cleverbase callback and no `/v1/sign/*` or
+`/v1/verify` route.
 
 Use the mock as the primary local fixture. Start the pinned mock image as the Compose service
 `cleverbase-refmock`, expose it to the host on `localhost:9000` for the browser redirect, and give
