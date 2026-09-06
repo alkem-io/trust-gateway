@@ -42,6 +42,21 @@ type Result struct {
 	Step   map[string]any
 }
 
+// PDFSigner is the identity read from the PDF's embedded signing certificate.
+type PDFSigner struct {
+	Serial string `json:"serial"`
+	CN     string `json:"cn"`
+}
+
+// PDFVerification is the SDK's integrity-only verdict for one PDF signature. Profile and Signer
+// are nil unless Integrity is true; Reasons is empty if and only if Integrity is true.
+type PDFVerification struct {
+	Integrity bool       `json:"integrity"`
+	Profile   *string    `json:"profile"`
+	Signer    *PDFSigner `json:"signer"`
+	Reasons   []string   `json:"reasons"`
+}
+
 // SDK is the subset of the binding the flow drives.
 type SDK interface {
 	// Begin starts the SDK state machine for a document.
@@ -52,6 +67,8 @@ type SDK interface {
 	ResumeRedirectError(handle []byte, oauthError, state string) (Result, error)
 	// ResumeHTTP advances an SDK-emitted HTTP effect.
 	ResumeHTTP(handle []byte, status int, body []byte) (Result, error)
+	// VerifyPDF returns the SDK's stateless integrity verdict for one PDF.
+	VerifyPDF(document []byte) (PDFVerification, error)
 }
 
 // Effector performs a single HTTP effect (the upstream client rewrites the host internally in

@@ -68,6 +68,28 @@ func toBindingOptions(opts *flow.Options) *bindings.RequestOptions {
 	}}
 }
 
+func toVerification(result *bindings.PDFVerification) flow.PDFVerification {
+	verification := flow.PDFVerification{
+		Integrity: result.Integrity,
+		Profile:   result.Profile,
+		// Always emit a JSON array. The reason strings themselves pass through verbatim from the SDK.
+		Reasons: append([]string{}, result.Reasons...),
+	}
+	if result.Signer != nil {
+		verification.Signer = &flow.PDFSigner{Serial: result.Signer.Serial, CN: result.Signer.CN}
+	}
+	return verification
+}
+
+// VerifyPDF returns the binding's stateless PDF integrity verdict.
+func (*Adapter) VerifyPDF(document []byte) (flow.PDFVerification, error) {
+	result, err := bindings.VerifyPDF(document)
+	if err != nil {
+		return flow.PDFVerification{}, err
+	}
+	return toVerification(result), nil
+}
+
 // Begin starts a signing session.
 func (a *Adapter) Begin(document []byte, conformance string, opts *flow.Options) (flow.Result, error) {
 	if err := opts.Validate(); err != nil {

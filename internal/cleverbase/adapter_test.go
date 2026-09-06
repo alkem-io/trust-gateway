@@ -165,3 +165,34 @@ func TestNewForwardsSDKUpstreamBaseURL(t *testing.T) {
 		t.Fatalf("binding UpstreamBaseURL = %q, want %q", adapter.cfg.UpstreamBaseURL, stubURL)
 	}
 }
+
+func TestAdapterVerifyPDFPassesThroughTheSDKVerdict(t *testing.T) {
+	adapter := New(&config.Profile{})
+	verdict, err := adapter.VerifyPDF([]byte("not a PDF"))
+	if err != nil {
+		t.Fatalf("VerifyPDF() error = %v", err)
+	}
+	if verdict.Integrity || verdict.Profile != nil || verdict.Signer != nil ||
+		!reflect.DeepEqual(verdict.Reasons, []string{"not_pdf"}) {
+		t.Fatalf("VerifyPDF() = %#v, want not_pdf integrity verdict", verdict)
+	}
+}
+
+func TestToVerificationPreservesSDKValues(t *testing.T) {
+	profile := "B-T"
+	want := flow.PDFVerification{
+		Integrity: true,
+		Profile:   &profile,
+		Signer:    &flow.PDFSigner{Serial: "07FB", CN: "Jane Doe"},
+		Reasons:   []string{},
+	}
+	got := toVerification(&bindings.PDFVerification{
+		Integrity: true,
+		Profile:   &profile,
+		Signer:    &bindings.PDFSigner{Serial: "07FB", CN: "Jane Doe"},
+		Reasons:   nil,
+	})
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("toVerification() = %#v, want %#v", got, want)
+	}
+}

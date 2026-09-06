@@ -8,10 +8,16 @@ import (
 	"github.com/alkem-io/trust-gateway/internal/config"
 )
 
-// authMiddleware enforces a bearer API key on /v1/sign/* when auth is enabled (the default). Health
-// endpoints are always open for orchestration probes. Rejection happens before any signing work.
+// authMiddleware enforces a bearer API key on private API routes when auth is enabled (the default).
+// Health endpoints are always open for orchestration probes. Rejection happens before any SDK work.
 func (s *Service) authMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Private API responses and the OAuth callback can carry document/session or browser credential
+		// state even when routing or authentication rejects the request. Own the cache policy at this
+		// boundary so every sensitive response is fail-closed.
+		if strings.HasPrefix(r.URL.Path, "/v1/") || r.URL.Path == config.OAuthCallbackPath {
+			w.Header().Set("Cache-Control", "no-store")
+		}
 		callbackMethod := r.Method == http.MethodGet || r.Method == http.MethodHead
 		publicCallback := callbackMethod && r.URL.Path == config.OAuthCallbackPath
 		if !s.Profile.AuthEnabled || r.URL.Path == "/healthz" || r.URL.Path == "/readyz" || publicCallback {
