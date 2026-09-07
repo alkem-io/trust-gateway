@@ -128,7 +128,7 @@ endpoints:
 | `TRUST_GATEWAY_E2E_CA_BUNDLE` | unset | CA bundle for live CMS trust validation; required in live mode. |
 | `TRUST_GATEWAY_E2E_TIMEOUT` | `45s` (`5m` live) | Bounded journey timeout. |
 | `TRUST_GATEWAY_E2E_REQUIRED` | unset | Set to `1` in CI/deployment gates so missing prerequisites fail instead of skipping. |
-| `TRUST_GATEWAY_E2E_ARTIFACT_DIR` | unset | Optional absolute directory outside the repository. After all live assertions pass, the driver writes the signed PDF, decoded evidence, `/v1/verify` verdict, and correlation metadata there with private permissions. |
+| `TRUST_GATEWAY_E2E_ARTIFACT_DIR` | unset | Optional existing absolute directory outside the repository with mode `0700`. After all live assertions pass, the driver writes the signed PDF, decoded evidence, `/v1/verify` verdict, and correlation metadata there with private file permissions; it never changes the operator-owned directory mode. |
 
 ```bash
 export TRUST_GATEWAY_E2E_URL=https://<private-gateway-address>

@@ -561,9 +561,9 @@ func prepareArtifactDirectory(directory string) (string, error) {
 	if relative == "." || (relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator))) {
 		return "", errors.New("TRUST_GATEWAY_E2E_ARTIFACT_DIR must be outside the repository")
 	}
-	//nolint:gosec // G302: this is a directory; owner read/write/traverse is intentionally 0700.
-	if err := os.Chmod(resolvedDirectory, 0o700); err != nil {
-		return "", fmt.Errorf("secure artifact directory: %w", err)
+	// The operator owns this directory. Reject unsafe permissions instead of changing them.
+	if info.Mode().Perm() != 0o700 {
+		return "", errors.New("TRUST_GATEWAY_E2E_ARTIFACT_DIR must already have mode 0700")
 	}
 	return resolvedDirectory, nil
 }
@@ -759,6 +759,10 @@ func TestStartSigningUsesGatewayDefaultConformance(t *testing.T) {
 func TestWriteArtifactsPersistsValidatedEvidenceOutsideRepository(t *testing.T) {
 	t.Parallel()
 	artifactDir := t.TempDir()
+	//nolint:gosec // This is a directory; owner read/write/traverse is intentionally 0700.
+	if err := os.Chmod(artifactDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
 	profile := "B-T"
 	artifacts := acceptanceArtifacts{
 		CorrelationID: "correlation-id",
@@ -845,8 +849,33 @@ func TestArtifactDirectoryMustBeOutsideRepository(t *testing.T) {
 	if _, err := os.Stat(insidePath); !os.IsNotExist(err) {
 		t.Fatalf("rejected in-repository artifact path was created: %v", err)
 	}
-	if _, err := prepareArtifactDirectory(t.TempDir()); err != nil {
+	outsidePath := t.TempDir()
+	//nolint:gosec // This is a directory; owner read/write/traverse is intentionally 0700.
+	if err := os.Chmod(outsidePath, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := prepareArtifactDirectory(outsidePath); err != nil {
 		t.Fatalf("outside artifact directory rejected: %v", err)
+	}
+}
+
+func TestArtifactDirectoryMustAlreadyBePrivate(t *testing.T) {
+	t.Parallel()
+	directory := t.TempDir()
+	//nolint:gosec // The insecure mode is deliberate test input and must remain unchanged.
+	if err := os.Chmod(directory, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := prepareArtifactDirectory(directory); err == nil {
+		t.Fatal("prepareArtifactDirectory accepted a non-private operator directory")
+	}
+	info, err := os.Stat(directory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o755 {
+		t.Fatalf("rejected operator directory mode changed to %o", info.Mode().Perm())
 	}
 }
 
