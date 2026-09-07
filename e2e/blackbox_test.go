@@ -5,6 +5,7 @@ package e2e_test
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
@@ -12,6 +13,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"os"
 	"os/exec"
@@ -585,5 +587,115 @@ func TestValidateEvidenceRequiresSignerIdentity(t *testing.T) {
 				t.Fatal("validateEvidence accepted incomplete signer identity")
 			}
 		})
+	}
+}
+
+func TestStartSigningUsesGatewayDefaultConformance(t *testing.T) {
+	t.Parallel()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var request map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Errorf("decode start request: %v", err)
+		}
+		if _, exists := request["conformanceLevel"]; exists {
+			t.Errorf("start request overrides the gateway's configured conformance: %v", request)
+		}
+		writeTestJSON(t, w, startResponse{
+			RedirectURL:   "https://example.invalid/authorize",
+			CorrelationID: "correlation-id",
+			ExpiresAt:     "2026-09-07T12:00:00Z",
+		})
+	}))
+	defer server.Close()
+
+	startSigning(t, context.Background(), server.Client(), testConfig{
+		baseURL: server.URL,
+		apiKey: "test-key",
+	})
+}
+
+func TestWriteArtifactsPersistsValidatedEvidenceOutsideRepository(t *testing.T) {
+	t.Parallel()
+	artifactDir := t.TempDir()
+	profile := "B-T"
+	artifacts := acceptanceArtifacts{
+		CorrelationID: "correlation-id",
+		ExpiresAt:     "2026-09-07T12:00:00Z",
+		SignedPDF:    []byte("%PDF-signed"),
+		Evidence:     json.RawMessage(`{"outcome":"signed"}`),
+		Verification: verifyResponse{Integrity: true, Profile: &profile, Reasons: []string{}},
+	}
+	if err := writeArtifacts(artifactDir, artifacts); err != nil {
+		t.Fatalf("writeArtifacts() error = %v", err)
+	}
+
+	assertFile := func(name string, want []byte) {
+		t.Helper()
+		path := filepath.Join(artifactDir, name)
+		got, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read %s: %v", name, err)
+		}
+		if !bytes.Equal(bytes.TrimSpace(got), want) {
+			t.Fatalf("%s = %q, want %q", name, bytes.TrimSpace(got), want)
+		}
+		info, err := os.Stat(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if info.Mode().Perm() != 0o600 {
+			t.Fatalf("%s mode = %o, want 600", name, info.Mode().Perm())
+		}
+	}
+	assertFile("signed.pdf", artifacts.SignedPDF)
+	assertFile("evidence.json", artifacts.Evidence)
+
+	var verification verifyResponse
+	verificationBytes, err := os.ReadFile(filepath.Join(artifactDir, "verify.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(verificationBytes, &verification); err != nil {
+		t.Fatal(err)
+	}
+	if !verification.Integrity || verification.Profile == nil || *verification.Profile != "B-T" {
+		t.Fatalf("verify.json = %+v", verification)
+	}
+
+	var metadata artifactMetadata
+	metadataBytes, err := os.ReadFile(filepath.Join(artifactDir, "metadata.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(metadataBytes, &metadata); err != nil {
+		t.Fatal(err)
+	}
+	wantDigest := fmt.Sprintf("%x", sha256.Sum256(artifacts.SignedPDF))
+	if metadata.CorrelationID != artifacts.CorrelationID || metadata.ExpiresAt != artifacts.ExpiresAt || metadata.SignedPDFSHA256 != wantDigest {
+		t.Fatalf("metadata.json = %+v", metadata)
+	}
+}
+
+func TestArtifactDirectoryMustBeOutsideRepository(t *testing.T) {
+	t.Parallel()
+	repoRoot, err := findRepositoryRoot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{"relative", repoRoot, filepath.Join(repoRoot, "e2e", "artifacts")} {
+		if _, err := prepareArtifactDirectory(path); err == nil {
+			t.Errorf("prepareArtifactDirectory(%q) succeeded", path)
+		}
+	}
+	if _, err := prepareArtifactDirectory(t.TempDir()); err != nil {
+		t.Fatalf("outside artifact directory rejected: %v", err)
+	}
+}
+
+func writeTestJSON(t *testing.T, w http.ResponseWriter, value any) {
+	t.Helper()
+	w.Header().Set("Content-Type", "application/json")
+	if err := json.NewEncoder(w).Encode(value); err != nil {
+		t.Errorf("encode test response: %v", err)
 	}
 }
