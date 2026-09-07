@@ -62,6 +62,10 @@ func run(ctx context.Context, logger *slog.Logger) error {
 	if err != nil {
 		return fmt.Errorf("config: %w", err)
 	}
+	sdk := cleverbase.New(p)
+	if err := sdk.Validate(); err != nil {
+		return fmt.Errorf("SDK config: %w", err)
+	}
 	if !p.AuthEnabled {
 		// Auth is disabled only by the explicit, mutually-exclusive config opt-out. There is no
 		// per-route bypass: deployment network policy is therefore the single enforcement boundary.
@@ -80,7 +84,7 @@ func run(ctx context.Context, logger *slog.Logger) error {
 		publicRewrite = p.PublicUpstreamBaseURL // browser redirects → reachable mock host
 	}
 	engine := &flow.Engine{
-		SDK:             cleverbase.New(p),
+		SDK:             sdk,
 		Up:              upstream.New(internalRewrite),
 		Store:           store,
 		Log:             logger,

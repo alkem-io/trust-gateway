@@ -37,6 +37,10 @@ func New(p *config.Profile) *Adapter {
 	}}
 }
 
+// Validate checks the fixed SDK configuration without starting a signing session. The binding is
+// the single source of truth for these rules; the gateway adds no parallel validation here.
+func (a *Adapter) Validate() error { return a.cfg.Validate() }
+
 func now() int64 { return time.Now().Unix() }
 
 // randRead is the entropy source, indirected so tests can exercise the RNG-failure path. It defaults

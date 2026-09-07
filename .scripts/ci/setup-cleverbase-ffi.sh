@@ -2,7 +2,7 @@
 
 set -euo pipefail
 
-readonly ffi_version="v0.3.0"
+readonly ffi_version="v0.3.1"
 readonly release_tag="bindings/go/${ffi_version}"
 readonly release_base="https://github.com/alkem-io/cleverbase-sdk/releases/download/${release_tag}"
 
@@ -11,16 +11,16 @@ goarch="${GOARCH:-$(go env GOARCH)}"
 
 case "${goos}/${goarch}" in
   darwin/amd64)
-    readonly expected_sha256="4fd59560f0fa02864a0c8903a8832ba2579b72d4a77bd8ca193b803eba5405ea"
+    readonly expected_sha256="8707977077ec5e9f2d54c71e0fac6d38806852c40fd29d42c55e7282e9643a28"
     ;;
   darwin/arm64)
-    readonly expected_sha256="4858780c308511f43ca75379dffdd3714c42d78baf81a18506d9a7ad402f3a40"
+    readonly expected_sha256="88cfc1aacf5d893124bf6a451bad53007a7372bdcbbb48c2a960f3b4c76e6b87"
     ;;
   linux/amd64)
-    readonly expected_sha256="c055ccbbdcd81c86994a260010f94b43bc1b2fd05a262e18064b4046ed625b06"
+    readonly expected_sha256="b4e3d527c397a2a52e2bbe914e0223f725a6a6a3c859c4f05550485333c9ae6d"
     ;;
   linux/arm64)
-    readonly expected_sha256="5be0fbc50636779b24de58177fafef1a511136803386fa705c224920afad5a22"
+    readonly expected_sha256="ae3630c49ec4ffb1a64681bcc2d1d44f11c3569a24c57528bc0710668846870c"
     ;;
   *)
     printf 'unsupported Cleverbase FFI platform: %s/%s\n' "${goos}" "${goarch}" >&2
