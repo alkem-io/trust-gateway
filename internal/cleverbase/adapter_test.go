@@ -166,6 +166,19 @@ func TestNewForwardsSDKUpstreamBaseURL(t *testing.T) {
 	}
 }
 
+func TestAdapterValidateRejectsInvalidSDKConfiguration(t *testing.T) {
+	adapter := New(&config.Profile{
+		Environment: "acceptance", CSCAPI: "v1_rsa", ClientID: "client", ClientSecret: "secret",
+		RedirectURI: "http://localhost:3000/oauth/cleverbase/callback",
+		// Gateway policy permits overrides outside production; the SDK owns the stricter endpoint
+		// rule and must reject non-HTTPS, non-loopback upstreams before the gateway listens.
+		SDKUpstreamBaseURL: "http://example.com",
+	})
+	if err := adapter.Validate(); err == nil {
+		t.Fatal("Validate() accepted a non-HTTPS, non-loopback SDK upstream")
+	}
+}
+
 func TestAdapterVerifyPDFPassesThroughTheSDKVerdict(t *testing.T) {
 	adapter := New(&config.Profile{})
 	verdict, err := adapter.VerifyPDF([]byte("not a PDF"))

@@ -128,6 +128,25 @@ func TestRunRejectsInvalidListenAddress(t *testing.T) {
 	}
 }
 
+func TestRunRejectsInvalidSDKConfigurationBeforeListen(t *testing.T) {
+	fixtureRuntime(t)
+	t.Setenv("TRUST_GATEWAY_UPSTREAM_BASE_URL", "http://example.com")
+	resetRuntimeHooks(t)
+	listenCalled := false
+	listenTCP = func(string, string) (net.Listener, error) {
+		listenCalled = true
+		return nil, errors.New("listen should not be called")
+	}
+
+	err := run(context.Background(), slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err == nil || !strings.Contains(err.Error(), "SDK config") {
+		t.Fatalf("run() error = %v, want SDK config failure", err)
+	}
+	if listenCalled {
+		t.Fatal("run() opened the listener before validating SDK configuration")
+	}
+}
+
 func TestRunShutsDownWhenContextIsCanceled(t *testing.T) {
 	fixtureRuntime(t)
 	address := captureListenAddress(t)
