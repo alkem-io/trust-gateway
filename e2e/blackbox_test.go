@@ -5,6 +5,7 @@ package e2e_test
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
@@ -12,6 +13,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"os"
 	"os/exec"
@@ -34,22 +36,24 @@ const (
 var byteRangePattern = regexp.MustCompile(`/ByteRange\s*\[\s*(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s*\]`)
 
 type testConfig struct {
-	baseURL  string
-	apiKey   string
-	mode     string
-	caBundle string
-	timeout  time.Duration
+	baseURL     string
+	apiKey      string
+	mode        string
+	caBundle    string
+	artifactDir string
+	timeout     time.Duration
 }
 
 func loadConfig(t *testing.T) testConfig {
 	t.Helper()
 	required := os.Getenv("TRUST_GATEWAY_E2E_REQUIRED") == "1"
 	cfg := testConfig{
-		baseURL:  strings.TrimRight(os.Getenv("TRUST_GATEWAY_E2E_URL"), "/"),
-		apiKey:   os.Getenv("TRUST_GATEWAY_E2E_API_KEY"),
-		mode:     os.Getenv("TRUST_GATEWAY_E2E_MODE"),
-		caBundle: os.Getenv("TRUST_GATEWAY_E2E_CA_BUNDLE"),
-		timeout:  45 * time.Second,
+		baseURL:     strings.TrimRight(os.Getenv("TRUST_GATEWAY_E2E_URL"), "/"),
+		apiKey:      os.Getenv("TRUST_GATEWAY_E2E_API_KEY"),
+		mode:        os.Getenv("TRUST_GATEWAY_E2E_MODE"),
+		caBundle:    os.Getenv("TRUST_GATEWAY_E2E_CA_BUNDLE"),
+		artifactDir: os.Getenv("TRUST_GATEWAY_E2E_ARTIFACT_DIR"),
+		timeout:     45 * time.Second,
 	}
 	if cfg.baseURL == "" || cfg.apiKey == "" {
 		unavailable(t, required, "black-box E2E requires TRUST_GATEWAY_E2E_URL and TRUST_GATEWAY_E2E_API_KEY")
@@ -180,6 +184,25 @@ type verifyResponse struct {
 	Reasons []string `json:"reasons"`
 }
 
+type signedResult struct {
+	PDF      []byte
+	Evidence json.RawMessage
+}
+
+type acceptanceArtifacts struct {
+	CorrelationID string
+	ExpiresAt     string
+	SignedPDF     []byte
+	Evidence      json.RawMessage
+	Verification  verifyResponse
+}
+
+type artifactMetadata struct {
+	CorrelationID   string `json:"correlationId"`
+	ExpiresAt       string `json:"expiresAt"`
+	SignedPDFSHA256 string `json:"signedPdfSha256"`
+}
+
 func TestBlackboxSigning(t *testing.T) {
 	cfg := loadConfig(t)
 	client := &http.Client{
@@ -196,9 +219,21 @@ func TestBlackboxSigning(t *testing.T) {
 		t.Fatalf("authorize signing: %v", err)
 	}
 	status := waitTerminal(t, ctx, client, cfg, started.CorrelationID)
-	signedPDF := assertTerminalResult(t, ctx, client, cfg, started.CorrelationID, status)
-	if cfg.mode == "mock" {
-		assertGatewayVerification(t, ctx, client, cfg, signedPDF)
+	result := assertTerminalResult(t, ctx, client, cfg, started.CorrelationID, status)
+	if cfg.mode != "stub" {
+		verification := assertGatewayVerification(t, ctx, client, cfg, result.PDF)
+		if cfg.artifactDir != "" {
+			if err := writeArtifacts(cfg.artifactDir, acceptanceArtifacts{
+				CorrelationID: started.CorrelationID,
+				ExpiresAt:     started.ExpiresAt,
+				SignedPDF:     result.PDF,
+				Evidence:      result.Evidence,
+				Verification:  verification,
+			}); err != nil {
+				t.Fatalf("write acceptance artifacts: %v", err)
+			}
+			t.Logf("acceptance evidence written to %s", cfg.artifactDir)
+		}
 	}
 }
 
@@ -209,9 +244,8 @@ func startSigning(t *testing.T, ctx context.Context, client *http.Client, cfg te
 		t.Fatalf("read sample PDF: %v", err)
 	}
 	body, err := json.Marshal(map[string]string{
-		"document":         base64.StdEncoding.EncodeToString(document),
-		"conformanceLevel": "B-B",
-		"clientState":      clientState,
+		"document":    base64.StdEncoding.EncodeToString(document),
+		"clientState": clientState,
 	})
 	if err != nil {
 		t.Fatalf("encode start request: %v", err)
@@ -234,11 +268,11 @@ func openerFor(cfg testConfig, client *http.Client) redirectOpener {
 	return automatedOpener{client: client}
 }
 
-func assertTerminalResult(t *testing.T, ctx context.Context, client *http.Client, cfg testConfig, correlationID string, status statusResponse) []byte {
+func assertTerminalResult(t *testing.T, ctx context.Context, client *http.Client, cfg testConfig, correlationID string, status statusResponse) signedResult {
 	t.Helper()
 	if cfg.mode == "stub" {
 		assertStubFailure(t, ctx, client, cfg, correlationID, status)
-		return nil
+		return signedResult{}
 	}
 	if status.Status != "completed" {
 		t.Fatalf("signing ended with %s: %s", status.Status, status.Reason)
@@ -267,24 +301,38 @@ func assertTerminalResult(t *testing.T, ctx context.Context, client *http.Client
 	if resp.Header.Get("Cache-Control") != "no-store" {
 		t.Fatalf("result Cache-Control = %q, want no-store", resp.Header.Get("Cache-Control"))
 	}
-	assertEvidence(t, resp.Header.Get("X-Signature-Evidence"))
+	evidence := assertEvidence(t, resp.Header.Get("X-Signature-Evidence"))
 	verifyCMS(t, result, cfg)
-	return result
+	return signedResult{PDF: result, Evidence: evidence}
 }
 
-func assertGatewayVerification(t *testing.T, ctx context.Context, client *http.Client, cfg testConfig, signedPDF []byte) {
+func assertGatewayVerification(t *testing.T, ctx context.Context, client *http.Client, cfg testConfig, signedPDF []byte) verifyResponse {
 	t.Helper()
 	valid := verifyThroughGateway(t, ctx, client, cfg, signedPDF)
-	if !valid.Integrity || valid.Profile == nil || *valid.Profile != "B-B" || valid.Signer == nil ||
-		valid.Signer.Serial != mockSignerSerial || valid.Signer.CN != mockSignerCN || len(valid.Reasons) != 0 {
-		t.Fatalf("gateway rejected its signed PDF: %+v", valid)
-	}
+	assertValidGatewayVerification(t, cfg, valid)
 
 	tampered := tamperSignedWhitespace(t, signedPDF)
 	invalid := verifyThroughGateway(t, ctx, client, cfg, tampered)
 	if invalid.Integrity || invalid.Profile != nil || invalid.Signer != nil ||
 		len(invalid.Reasons) != 1 || invalid.Reasons[0] != "message_digest_mismatch" {
 		t.Fatalf("gateway tamper verdict = %+v, want message_digest_mismatch", invalid)
+	}
+	return valid
+}
+
+func assertValidGatewayVerification(t *testing.T, cfg testConfig, valid verifyResponse) {
+	t.Helper()
+	if !valid.Integrity || valid.Profile == nil || valid.Signer == nil || len(valid.Reasons) != 0 {
+		t.Fatalf("gateway rejected its signed PDF: %+v", valid)
+	}
+	if *valid.Profile != "B-B" && *valid.Profile != "B-T" {
+		t.Fatalf("gateway returned unsupported profile: %+v", valid)
+	}
+	if cfg.mode == "mock" && (*valid.Profile != "B-B" || valid.Signer.Serial != mockSignerSerial || valid.Signer.CN != mockSignerCN) {
+		t.Fatalf("gateway mock verification = %+v, want B-B signer %s / %s", valid, mockSignerSerial, mockSignerCN)
+	}
+	if cfg.mode == "live" && (valid.Signer.Serial == "" || valid.Signer.CN == "") {
+		t.Fatalf("gateway live verification lacks signer identity: %+v", valid)
 	}
 }
 
@@ -407,38 +455,134 @@ func assertStubFailure(t *testing.T, ctx context.Context, client *http.Client, c
 	}
 }
 
-func assertEvidence(t *testing.T, encoded string) {
+func assertEvidence(t *testing.T, encoded string) json.RawMessage {
 	t.Helper()
-	if err := validateEvidence(encoded); err != nil {
+	raw, err := validateEvidence(encoded)
+	if err != nil {
 		t.Fatal(err)
 	}
+	return raw
 }
 
-func validateEvidence(encoded string) error {
+func validateEvidence(encoded string) (json.RawMessage, error) {
 	if encoded == "" {
-		return errors.New("result lacks X-Signature-Evidence")
+		return nil, errors.New("result lacks X-Signature-Evidence")
 	}
 	raw, err := base64.StdEncoding.DecodeString(encoded)
 	if err != nil {
-		return fmt.Errorf("evidence is not base64: %w", err)
+		return nil, fmt.Errorf("evidence is not base64: %w", err)
 	}
 	var evidence map[string]any
 	if err := json.Unmarshal(raw, &evidence); err != nil {
-		return fmt.Errorf("evidence is not JSON: %w", err)
+		return nil, fmt.Errorf("evidence is not JSON: %w", err)
 	}
 	if evidence["outcome"] != "signed" {
-		return errors.New("evidence outcome is not signed")
+		return nil, errors.New("evidence outcome is not signed")
 	}
 	signer, ok := evidence["signer"].(map[string]any)
 	if !ok {
-		return errors.New("evidence lacks signer identity")
+		return nil, errors.New("evidence lacks signer identity")
 	}
 	serialNumber, serialOK := signer["serial_number"].(string)
 	rawSubject, subjectOK := signer["raw_subject"].(string)
 	if !serialOK || strings.TrimSpace(serialNumber) == "" || !subjectOK || strings.TrimSpace(rawSubject) == "" {
-		return errors.New("evidence signer identity lacks serial_number or raw_subject")
+		return nil, errors.New("evidence signer identity lacks serial_number or raw_subject")
+	}
+	return json.RawMessage(raw), nil
+}
+
+func writeArtifacts(directory string, artifacts acceptanceArtifacts) error {
+	directory, err := prepareArtifactDirectory(directory)
+	if err != nil {
+		return err
+	}
+	metadata := artifactMetadata{
+		CorrelationID:   artifacts.CorrelationID,
+		ExpiresAt:       artifacts.ExpiresAt,
+		SignedPDFSHA256: fmt.Sprintf("%x", sha256.Sum256(artifacts.SignedPDF)),
+	}
+	files := []struct {
+		name  string
+		value any
+		raw   []byte
+	}{
+		{name: "signed.pdf", raw: artifacts.SignedPDF},
+		{name: "evidence.json", raw: artifacts.Evidence},
+		{name: "verify.json", value: artifacts.Verification},
+		{name: "metadata.json", value: metadata},
+	}
+	for _, file := range files {
+		content := file.raw
+		if file.value != nil {
+			content, err = json.MarshalIndent(file.value, "", "  ")
+			if err != nil {
+				return fmt.Errorf("encode %s: %w", file.name, err)
+			}
+			content = append(content, '\n')
+		}
+		path := filepath.Join(directory, file.name)
+		if err := os.WriteFile(path, content, 0o600); err != nil {
+			return fmt.Errorf("write %s: %w", path, err)
+		}
+		if err := os.Chmod(path, 0o600); err != nil {
+			return fmt.Errorf("secure %s: %w", path, err)
+		}
 	}
 	return nil
+}
+
+func prepareArtifactDirectory(directory string) (string, error) {
+	if !filepath.IsAbs(directory) {
+		return "", errors.New("TRUST_GATEWAY_E2E_ARTIFACT_DIR must be an absolute path outside the repository")
+	}
+	info, err := os.Stat(directory)
+	if err != nil {
+		return "", fmt.Errorf("inspect artifact directory: %w", err)
+	}
+	if !info.IsDir() {
+		return "", errors.New("TRUST_GATEWAY_E2E_ARTIFACT_DIR must name an existing directory")
+	}
+	resolvedDirectory, err := filepath.EvalSymlinks(directory)
+	if err != nil {
+		return "", fmt.Errorf("resolve artifact directory: %w", err)
+	}
+	repositoryRoot, err := findRepositoryRoot()
+	if err != nil {
+		return "", err
+	}
+	resolvedRoot, err := filepath.EvalSymlinks(repositoryRoot)
+	if err != nil {
+		return "", fmt.Errorf("resolve repository root: %w", err)
+	}
+	relative, err := filepath.Rel(resolvedRoot, resolvedDirectory)
+	if err != nil {
+		return "", fmt.Errorf("compare artifact directory with repository: %w", err)
+	}
+	if relative == "." || (relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator))) {
+		return "", errors.New("TRUST_GATEWAY_E2E_ARTIFACT_DIR must be outside the repository")
+	}
+	// The operator owns this directory. Reject unsafe permissions instead of changing them.
+	if info.Mode().Perm() != 0o700 {
+		return "", errors.New("TRUST_GATEWAY_E2E_ARTIFACT_DIR must already have mode 0700")
+	}
+	return resolvedDirectory, nil
+}
+
+func findRepositoryRoot() (string, error) {
+	directory, err := os.Getwd()
+	if err != nil {
+		return "", fmt.Errorf("get working directory: %w", err)
+	}
+	for {
+		if info, statErr := os.Stat(filepath.Join(directory, "go.mod")); statErr == nil && !info.IsDir() {
+			return directory, nil
+		}
+		parent := filepath.Dir(directory)
+		if parent == directory {
+			return "", errors.New("cannot locate repository root containing go.mod")
+		}
+		directory = parent
+	}
 }
 
 func verifyCMS(t *testing.T, pdf []byte, cfg testConfig) {
@@ -581,9 +725,164 @@ func TestValidateEvidenceRequiresSignerIdentity(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 			encoded := base64.StdEncoding.EncodeToString([]byte(raw))
-			if err := validateEvidence(encoded); err == nil {
+			if _, err := validateEvidence(encoded); err == nil {
 				t.Fatal("validateEvidence accepted incomplete signer identity")
 			}
 		})
+	}
+}
+
+func TestStartSigningUsesGatewayDefaultConformance(t *testing.T) {
+	t.Parallel()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var request map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Errorf("decode start request: %v", err)
+		}
+		if _, exists := request["conformanceLevel"]; exists {
+			t.Errorf("start request overrides the gateway's configured conformance: %v", request)
+		}
+		writeTestJSON(t, w, startResponse{
+			RedirectURL:   "https://example.invalid/authorize",
+			CorrelationID: "correlation-id",
+			ExpiresAt:     "2026-09-07T12:00:00Z",
+		})
+	}))
+	defer server.Close()
+
+	startSigning(t, context.Background(), server.Client(), testConfig{
+		baseURL: server.URL,
+		apiKey:  "test-key",
+	})
+}
+
+func TestWriteArtifactsPersistsValidatedEvidenceOutsideRepository(t *testing.T) {
+	t.Parallel()
+	artifactDir := t.TempDir()
+	//nolint:gosec // This is a directory; owner read/write/traverse is intentionally 0700.
+	if err := os.Chmod(artifactDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	profile := "B-T"
+	artifacts := acceptanceArtifacts{
+		CorrelationID: "correlation-id",
+		ExpiresAt:     "2026-09-07T12:00:00Z",
+		SignedPDF:     []byte("%PDF-signed"),
+		Evidence:      json.RawMessage(`{"outcome":"signed"}`),
+		Verification:  verifyResponse{Integrity: true, Profile: &profile, Reasons: []string{}},
+	}
+	if err := writeArtifacts(artifactDir, artifacts); err != nil {
+		t.Fatalf("writeArtifacts() error = %v", err)
+	}
+
+	assertArtifactFile(t, artifactDir, "signed.pdf", artifacts.SignedPDF)
+	assertArtifactFile(t, artifactDir, "evidence.json", artifacts.Evidence)
+
+	var verification verifyResponse
+	verificationBytes := readArtifactFile(t, artifactDir, "verify.json")
+	if err := json.Unmarshal(verificationBytes, &verification); err != nil {
+		t.Fatal(err)
+	}
+	if !verification.Integrity || verification.Profile == nil || *verification.Profile != "B-T" {
+		t.Fatalf("verify.json = %+v", verification)
+	}
+
+	var metadata artifactMetadata
+	metadataBytes := readArtifactFile(t, artifactDir, "metadata.json")
+	if err := json.Unmarshal(metadataBytes, &metadata); err != nil {
+		t.Fatal(err)
+	}
+	wantDigest := fmt.Sprintf("%x", sha256.Sum256(artifacts.SignedPDF))
+	if metadata.CorrelationID != artifacts.CorrelationID || metadata.ExpiresAt != artifacts.ExpiresAt || metadata.SignedPDFSHA256 != wantDigest {
+		t.Fatalf("metadata.json = %+v", metadata)
+	}
+}
+
+func assertArtifactFile(t *testing.T, directory, name string, want []byte) {
+	t.Helper()
+	got := readArtifactFile(t, directory, name)
+	if !bytes.Equal(bytes.TrimSpace(got), want) {
+		t.Fatalf("%s = %q, want %q", name, bytes.TrimSpace(got), want)
+	}
+	info, err := os.Stat(filepath.Join(directory, name))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o600 {
+		t.Fatalf("%s mode = %o, want 600", name, info.Mode().Perm())
+	}
+}
+
+func readArtifactFile(t *testing.T, directory, name string) []byte {
+	t.Helper()
+	//nolint:gosec // G304: both directory and fixed filenames are controlled by this test.
+	content, err := os.ReadFile(filepath.Join(directory, name))
+	if err != nil {
+		t.Fatalf("read %s: %v", name, err)
+	}
+	return content
+}
+
+func TestArtifactDirectoryMustBeOutsideRepository(t *testing.T) {
+	t.Parallel()
+	repoRoot, err := findRepositoryRoot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	rootInfo, err := os.Stat(repoRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	insidePath := filepath.Join(repoRoot, "e2e", "artifacts-must-not-be-created")
+	for _, path := range []string{"relative", repoRoot, insidePath} {
+		if _, err := prepareArtifactDirectory(path); err == nil {
+			t.Errorf("prepareArtifactDirectory(%q) succeeded", path)
+		}
+	}
+	afterInfo, err := os.Stat(repoRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if afterInfo.Mode().Perm() != rootInfo.Mode().Perm() {
+		t.Fatalf("rejected repository directory mode changed from %o to %o", rootInfo.Mode().Perm(), afterInfo.Mode().Perm())
+	}
+	if _, err := os.Stat(insidePath); !os.IsNotExist(err) {
+		t.Fatalf("rejected in-repository artifact path was created: %v", err)
+	}
+	outsidePath := t.TempDir()
+	//nolint:gosec // This is a directory; owner read/write/traverse is intentionally 0700.
+	if err := os.Chmod(outsidePath, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := prepareArtifactDirectory(outsidePath); err != nil {
+		t.Fatalf("outside artifact directory rejected: %v", err)
+	}
+}
+
+func TestArtifactDirectoryMustAlreadyBePrivate(t *testing.T) {
+	t.Parallel()
+	directory := t.TempDir()
+	//nolint:gosec // The insecure mode is deliberate test input and must remain unchanged.
+	if err := os.Chmod(directory, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := prepareArtifactDirectory(directory); err == nil {
+		t.Fatal("prepareArtifactDirectory accepted a non-private operator directory")
+	}
+	info, err := os.Stat(directory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o755 {
+		t.Fatalf("rejected operator directory mode changed to %o", info.Mode().Perm())
+	}
+}
+
+func writeTestJSON(t *testing.T, w http.ResponseWriter, value any) {
+	t.Helper()
+	w.Header().Set("Content-Type", "application/json")
+	if err := json.NewEncoder(w).Encode(value); err != nil {
+		t.Errorf("encode test response: %v", err)
 	}
 }
