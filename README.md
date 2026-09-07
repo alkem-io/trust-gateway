@@ -26,8 +26,8 @@ profile.
 | `TRUST_GATEWAY_TSA_URL` | `<BASE_URL>/tsr` in fixtures | RFC 3161 TSA URL. Required in live mode because requests may select B-T. |
 | `TRUST_GATEWAY_TSA_AUTH` | unset | Optional TSA `Authorization` header value. |
 | `TRUST_GATEWAY_TSA_POLICY` | unset | Optional TSA policy OID. |
-| `TRUST_GATEWAY_BASE_URL` | unset | Internal mock base URL; required in fixtures mode. Live mode does not rewrite SDK URLs. |
-| `TRUST_GATEWAY_PUBLIC_BASE_URL` | `TRUST_GATEWAY_BASE_URL` | Browser-reachable mock base used only to rewrite fixture authorization redirects. |
+| `TRUST_GATEWAY_BASE_URL` | unset | Fixtures only: internal mock base URL, required in fixtures mode. Live mode does not rewrite SDK URLs. |
+| `TRUST_GATEWAY_PUBLIC_BASE_URL` | `TRUST_GATEWAY_BASE_URL` | Fixtures only: browser-reachable mock base used to rewrite fixture authorization redirects. It is unset and unused in live mode. |
 | `TRUST_GATEWAY_UPSTREAM_BASE_URL` | unset | Optional SDK endpoint override for the documented Cleverbase hash-signing stub. It replaces both OAuth and CSC origins, is refused when `TRUST_GATEWAY_ENV=production`, and is warned at startup. `BASE_URL` and `PUBLIC_BASE_URL` remain fixture rewrites. |
 | `TRUST_GATEWAY_API_KEY` | unset | Bearer key protecting `/v1/sign/*` and `/v1/verify`. Set it to enable gateway auth. It cannot be combined with `TRUST_GATEWAY_AUTH_DISABLED=true`. |
 | `TRUST_GATEWAY_AUTH_DISABLED` | `false` | Explicitly disables gateway API-key auth in fixtures or live mode. Kubernetes `NetworkPolicy` must admit only approved sources to gateway port 8080; the Ingress or proxy must expose only the exact public callback and no `/v1/sign/*` or `/v1/verify` route. Egress to Cleverbase and the TSA remains required. The gateway logs a startup warning. |
@@ -128,6 +128,7 @@ endpoints:
 | `TRUST_GATEWAY_E2E_CA_BUNDLE` | unset | CA bundle for live CMS trust validation; required in live mode. |
 | `TRUST_GATEWAY_E2E_TIMEOUT` | `45s` (`5m` live) | Bounded journey timeout. |
 | `TRUST_GATEWAY_E2E_REQUIRED` | unset | Set to `1` in CI/deployment gates so missing prerequisites fail instead of skipping. |
+| `TRUST_GATEWAY_E2E_ARTIFACT_DIR` | unset | Optional absolute directory outside the repository. After all live assertions pass, the driver writes the signed PDF, decoded evidence, `/v1/verify` verdict, and correlation metadata there with private permissions. |
 
 ```bash
 export TRUST_GATEWAY_E2E_URL=https://<private-gateway-address>
@@ -205,14 +206,24 @@ not a cryptographically valid signature or signer identity.
 ### First manual acceptance run
 
 This is a gateway-only, local Docker smoke test against Cleverbase acceptance. It signs the bundled
-sample PDF as PAdES B-B/RSA, validates the returned CMS with OpenSSL, and never writes credentials
-or the signed PDF to the repository. It is not the Alkemio-integrated local route: that route stays
-on `localhost:3000` behind the local Traefik stack.
+sample PDF as PAdES B-T/RSA, validates the returned CMS with OpenSSL, checks the embedded timestamp
+with `/v1/verify`, and writes the reviewed evidence only to an explicit directory outside the
+repository. It is not the Alkemio-integrated local route: the standalone container temporarily owns
+host port 3000 itself instead of running behind the local Traefik stack.
 
 Before starting, obtain out of band: the existing Alkemio acceptance client ID and secret (with the
-signing service credential), a user-approved qualified TSA URL, an acceptance signer enrolled in the
-Cleverbase Wallet app, and the Cleverbase acceptance issuer/CA bundle in PEM form. The CA bundle is
-mandatory: live E2E intentionally has no `-noverify` or other trust bypass.
+signing service credential), an acceptance signer enrolled in the Cleverbase Wallet app, and the
+Cleverbase acceptance issuer/CA bundle in PEM form. The CA bundle is mandatory: live E2E
+intentionally has no `-noverify` or other trust bypass.
+
+For SANDBOX and this local acceptance run only, use the public, non-qualified testing TSA at
+`https://thameur.org/tsa`, with `TRUST_GATEWAY_TSA_AUTH` and `TRUST_GATEWAY_TSA_POLICY` both unset.
+Its public documentation identifies it as a testing RFC 3161 service. On 2026-09-07 the gateway's
+own TSA client received a SHA-256-imprint, P-256/SHA-256 token from it; a complete mock-signing B-T
+flow finished and `/v1/verify` returned `integrity=true`, `profile=B-T`, and no reasons. The signed
+fixture PDF SHA-256 was `4a255c2eee60a82a24c4ed5dcad14534e0ae6cf9c1cafe2564cbf3002f77a648`
+(gateway correlation `daa4a6e2cacaa0878676d58697a5b500`). This proves protocol and integrity,
+not qualification or chain trust. Replace this TSA for production.
 
 Uanataca documents its sandbox RFC 3161 endpoint as
 `https://tsa.sandbox.uanataca.com/tsa/tss03` with HTTP Basic billing credentials. When Cleverbase
@@ -243,54 +254,59 @@ TRUST_GATEWAY_CLIENT_SECRET=<provided-out-of-band>
 TRUST_GATEWAY_MODE=live
 TRUST_GATEWAY_ENV=acceptance
 TRUST_GATEWAY_CSC_API=v1_rsa
-TRUST_GATEWAY_REDIRECT_URI=http://localhost:8080/oauth/cleverbase/callback
-TRUST_GATEWAY_RETURN_URL=http://localhost:8080/acceptance-complete
-TRUST_GATEWAY_TSA_URL=https://<user-approved-qualified-tsa>/...
+TRUST_GATEWAY_REDIRECT_URI=http://localhost:3000/oauth/cleverbase/callback
+TRUST_GATEWAY_RETURN_URL=http://localhost:3000/acceptance-complete
+TRUST_GATEWAY_TSA_URL=https://thameur.org/tsa
 TRUST_GATEWAY_AUTH_DISABLED=true
-TRUST_GATEWAY_DEFAULT_CONFORMANCE=B-B
+TRUST_GATEWAY_DEFAULT_CONFORMANCE=B-T
 TRUST_GATEWAY_SESSION_TTL=15m
 TRUST_GATEWAY_LISTEN=:8080
 ```
 
-Build the image and start the gateway in one terminal. This direct local mode uses port 8080 because
-it does not start Alkemio's Traefik stack; the acceptance client's unrestricted localhost redirect
-allows the callback URL above.
+The acceptance client registration was probed before an identity was available. The exact callback
+paths on `localhost:3000`, SANDBOX, DEV, TEST, and ACC were accepted; `localhost:8080` and a different
+path on `localhost:3000` were rejected. The registration is therefore path-specific. Stop anything
+already using host port 3000, then build the image and map that registered host port to the gateway's
+unchanged container port 8080.
 
 ```bash
 make docker
 docker run --rm --name trust-gateway-acceptance \
-  --publish 127.0.0.1:8080:8080 \
+  --publish 127.0.0.1:3000:8080 \
   --read-only \
   --security-opt no-new-privileges \
   --cap-drop ALL \
-  --env-file ~/.config/trust-gateway/acceptance_creds.env \
   --env-file ~/.config/trust-gateway/acceptance.env \
+  --env-file ~/.config/trust-gateway/acceptance_creds.env \
   alkemio/trust-gateway:latest
 ```
 
 Wait for a healthy configuration before starting the browser journey:
 
 ```bash
-curl --fail http://127.0.0.1:8080/readyz
+curl --fail http://127.0.0.1:3000/readyz
 ```
 
-In a second terminal, run the same black-box driver used for deployed live runs. The direct gateway
-is bound to loopback and explicitly network-isolated, so the driver's API-key variable is a nonempty
-placeholder only; it is not a Cleverbase credential.
+In a second terminal, create a private, outside-repository evidence directory and run the same
+black-box driver used for deployed live runs. The direct gateway is bound to loopback, so the
+driver's API-key variable is a nonempty placeholder only; it is not a Cleverbase credential.
 
 ```bash
-export TRUST_GATEWAY_E2E_URL=http://127.0.0.1:8080
+evidence_dir="$(mktemp -d "${TMPDIR:-/tmp}/trust-gateway-acceptance.XXXXXX")"
+chmod 700 "$evidence_dir"
+export TRUST_GATEWAY_E2E_URL=http://127.0.0.1:3000
 export TRUST_GATEWAY_E2E_API_KEY=network-isolated
 export TRUST_GATEWAY_E2E_CA_BUNDLE=~/.config/trust-gateway/cleverbase-acceptance-ca.pem
 export TRUST_GATEWAY_E2E_TIMEOUT=10m
 export TRUST_GATEWAY_E2E_REQUIRED=1
+export TRUST_GATEWAY_E2E_ARTIFACT_DIR="$evidence_dir"
 make e2e-live
 ```
 
 The test prints the first Cleverbase authorization URL. Open it in a browser on this machine and
 complete both Cleverbase steps with the enrolled Wallet signer. The expected path is:
 
-1. Cleverbase redirects the browser to `http://localhost:8080/oauth/cleverbase/callback` after the
+1. Cleverbase redirects the browser to `http://localhost:3000/oauth/cleverbase/callback` after the
    first authorization.
 2. The gateway validates that state and responds with a redirect to Cleverbase's second
    authorization/signing step.
@@ -300,5 +316,19 @@ complete both Cleverbase steps with the enrolled Wallet signer. The expected pat
 
 In this gateway-only smoke run, the final local return URL has no Alkemio handler, so the browser may
 show `404` after completion. That is expected; the E2E driver polls the private status endpoint,
-retrieves the result, verifies the CMS against the supplied acceptance CA bundle, and finishes with
-`PASS`. Stop the container with `docker stop trust-gateway-acceptance` when finished.
+retrieves the result, verifies the CMS against the supplied acceptance CA bundle, verifies the B-T
+token integrity, checks a tampered copy is rejected, and only then writes `signed.pdf`,
+`evidence.json`, `verify.json`, and `metadata.json` to the evidence directory. Pin the expected B-T
+verdict and record independent PDF inspection before sharing a redacted evidence package:
+
+```bash
+jq -e '.integrity == true and .profile == "B-T" and .reasons == []' "$evidence_dir/verify.json"
+pdfsig "$evidence_dir/signed.pdf" | tee "$evidence_dir/pdfsig.txt"
+docker logs trust-gateway-acceptance >"$evidence_dir/gateway.log" 2>&1
+shasum -a 256 "$evidence_dir/signed.pdf"
+jq '{correlationId, expiresAt, signedPdfSha256}' "$evidence_dir/metadata.json"
+```
+
+Keep the signed PDF, decoded signer evidence, verifier verdict, `pdfsig` output, gateway log, and
+correlation metadata together. Redact transient authorization URLs and never add the credential
+files to that package. Stop the container with `docker stop trust-gateway-acceptance` when finished.
