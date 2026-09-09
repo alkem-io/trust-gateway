@@ -166,6 +166,20 @@ func TestNewForwardsSDKUpstreamBaseURL(t *testing.T) {
 	}
 }
 
+func TestNewForwardsUanatacaTSAConfigurationVerbatim(t *testing.T) {
+	const (
+		tsaURL    = "https://tsa.sandbox.uanataca.com/tsa/tss03"
+		tsaAuth   = "Basic dXNlcjpwYXNzd29yZA=="
+		tsaPolicy = "0.4.0.2023.1.1"
+	)
+	adapter := New(&config.Profile{TSAURL: tsaURL, TSAAuth: tsaAuth, TSAPolicy: tsaPolicy})
+	if adapter.cfg.TsaURL != tsaURL || adapter.cfg.TsaAuth != tsaAuth || adapter.cfg.TsaPolicy != tsaPolicy {
+		t.Fatalf("binding TSA config = {%q, %q, %q}, want {%q, %q, %q}",
+			adapter.cfg.TsaURL, adapter.cfg.TsaAuth, adapter.cfg.TsaPolicy,
+			tsaURL, tsaAuth, tsaPolicy)
+	}
+}
+
 func TestAdapterValidateRejectsInvalidSDKConfiguration(t *testing.T) {
 	adapter := New(&config.Profile{
 		Environment: "acceptance", CSCAPI: "v1_rsa", ClientID: "client", ClientSecret: "secret",
