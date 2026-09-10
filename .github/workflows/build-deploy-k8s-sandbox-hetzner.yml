@@ -1,0 +1,19 @@
+name: Build & Deploy Trust Gateway to Sandbox on Hetzner
+
+on:
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    uses: alkem-io/github-workflows/.github/workflows/deploy-hetzner.yml@v1
+    with:
+      environment: sandbox
+      # The kustomize base defines explicit workload names; image and pull-secret names retain the
+      # org conventions derived from the repo name.
+      deployment-name: trust-gateway
+      container-name: trust-gateway
+    secrets:
+      KUBECONFIG: ${{ secrets.KUBECONFIG_SECRET_HETZNER_SANDBOX }}
+      REGISTRY_LOGIN_SERVER: ${{ secrets.REGISTRY_LOGIN_SERVER }}
+      REGISTRY_USERNAME: ${{ secrets.REGISTRY_USERNAME }}
+      REGISTRY_PASSWORD: ${{ secrets.REGISTRY_PASSWORD }}
