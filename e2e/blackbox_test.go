@@ -640,12 +640,15 @@ func parseByteRange(pdf []byte) ([4]int, error) {
 func extractSignatureContents(t *testing.T, pdf []byte, gapStart, gapEnd int) []byte {
 	t.Helper()
 	gap := pdf[gapStart:gapEnd]
+	if len(gap) < 2 || gap[0] != '<' || gap[len(gap)-1] != '>' {
+		t.Fatalf("ByteRange gap is not a complete PDF hex string")
+	}
 	hexText := strings.Map(func(r rune) rune {
 		if r == ' ' || r == '\n' || r == '\r' || r == '\t' {
 			return -1
 		}
 		return r
-	}, string(gap))
+	}, string(gap[1:len(gap)-1]))
 	raw, err := hex.DecodeString(hexText)
 	if err != nil {
 		t.Fatalf("decode CMS hex: %v", err)
@@ -687,7 +690,7 @@ func derLength(der []byte) (int, error) {
 func TestExtractSignatureContentsUsesByteRangeGap(t *testing.T) {
 	t.Parallel()
 	pageContents := []byte("/Contents 1 0 R\n")
-	signatureGap := []byte("30 00")
+	signatureGap := []byte("<30 00>")
 	pdf := append(append([]byte(nil), pageContents...), signatureGap...)
 
 	got := extractSignatureContents(t, pdf, len(pageContents), len(pdf))
