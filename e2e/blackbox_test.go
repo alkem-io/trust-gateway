@@ -687,7 +687,7 @@ func derLength(der []byte) (int, error) {
 func TestExtractSignatureContentsUsesByteRangeGap(t *testing.T) {
 	t.Parallel()
 	pageContents := []byte("/Contents 1 0 R\n")
-	signatureGap := []byte("30 00")
+	signatureGap := []byte("<30 00>")
 	pdf := append(append([]byte(nil), pageContents...), signatureGap...)
 
 	got := extractSignatureContents(t, pdf, len(pageContents), len(pdf))
