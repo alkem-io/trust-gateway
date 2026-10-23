@@ -16,7 +16,7 @@ RUN lib_dir="$(GOOS=linux GOARCH="${TARGETARCH}" .scripts/ci/setup-cleverbase-ff
     go build -trimpath -ldflags="-s -w" -o /trust-gateway ./cmd/server/
 
 # distroless/cc is retained for the forthcoming cgo-linked Cleverbase static library.
-FROM gcr.io/distroless/cc-debian12:nonroot@sha256:9dac0a79194e45a7da0158a9c6da57b217585af0786db3845d1f0ec1a0dd182f
+FROM gcr.io/distroless/cc-debian13:nonroot@sha256:83b9b50586253821cf63ffcec87d3d94265a093ad30da232039af962dd8f4edf
 COPY --from=builder /trust-gateway /usr/local/bin/trust-gateway
 USER 65532:65532
 EXPOSE 8080
