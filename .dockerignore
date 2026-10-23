@@ -6,3 +6,4 @@ bin
 coverage.out
 .native
 *.md
+.forge-evidence

@@ -12,10 +12,11 @@ readonly mode="${TRUST_GATEWAY_E2E_MODE:-mock}"
 readonly gateway_port="${TRUST_GATEWAY_E2E_GATEWAY_PORT:-18080}"
 readonly mock_port="${TRUST_GATEWAY_E2E_MOCK_PORT:-19000}"
 readonly api_key="trust-gateway-blackbox-e2e"
+readonly resource_prefix="${TRUST_GATEWAY_E2E_RESOURCE_PREFIX:-trust-gateway-e2e}"
 readonly suffix="$$"
-readonly network="trust-gateway-e2e-${suffix}"
-readonly mock_name="trust-gateway-e2e-mock-${suffix}"
-readonly gateway_name="trust-gateway-e2e-gateway-${suffix}"
+readonly network="${resource_prefix}-${suffix}"
+readonly mock_name="${resource_prefix}-mock-${suffix}"
+readonly gateway_name="${resource_prefix}-gateway-${suffix}"
 
 case "${mode}" in
   mock|stub) ;;
@@ -25,14 +26,24 @@ case "${mode}" in
     ;;
 esac
 
+network_id=""
+mock_id=""
+gateway_id=""
+
 cleanup() {
   local status=$?
   if [[ ${status} -ne 0 ]]; then
     docker logs --tail 200 "${mock_name}" 2>/dev/null || true
     docker logs --tail 200 "${gateway_name}" 2>/dev/null || true
   fi
-  docker rm --force "${gateway_name}" "${mock_name}" >/dev/null 2>&1 || true
-  docker network rm "${network}" >/dev/null 2>&1 || true
+  for id in "${gateway_id}" "${mock_id}"; do
+    if [[ -n "${id}" ]]; then
+      docker rm --force "${id}" >/dev/null 2>&1 || true
+    fi
+  done
+  if [[ -n "${network_id}" ]]; then
+    docker network rm "${network_id}" >/dev/null 2>&1 || true
+  fi
   exit "${status}"
 }
 trap cleanup EXIT
@@ -59,7 +70,7 @@ wait_ready() {
 if ! docker image inspect "${gateway_image}" >/dev/null 2>&1; then
   docker pull "${gateway_image}" >/dev/null
 fi
-docker network create "${network}" >/dev/null
+network_id="$(docker network create "${network}")"
 
 gateway_env=(
   --env TRUST_GATEWAY_ENV=acceptance
@@ -74,11 +85,11 @@ gateway_env=(
 case "${mode}" in
   mock)
     docker pull "${mock_image}" >/dev/null
-    docker run --detach \
+    mock_id="$(docker run --detach \
       --name "${mock_name}" \
       --network "${network}" \
       --publish "127.0.0.1:${mock_port}:9000" \
-      "${mock_image}" >/dev/null
+      "${mock_image}")"
     wait_ready "${mock_name}" "http://127.0.0.1:${mock_port}/healthz"
     gateway_env+=(
       --env TRUST_GATEWAY_MODE=fixtures
@@ -104,7 +115,7 @@ case "${mode}" in
     ;;
 esac
 
-docker run --detach \
+gateway_id="$(docker run --detach \
   --name "${gateway_name}" \
   --network "${network}" \
   --publish "127.0.0.1:${gateway_port}:8080" \
@@ -112,7 +123,7 @@ docker run --detach \
   --security-opt no-new-privileges \
   --cap-drop ALL \
   "${gateway_env[@]}" \
-  "${gateway_image}" >/dev/null
+  "${gateway_image}")"
 wait_ready "${gateway_name}" "http://127.0.0.1:${gateway_port}/readyz"
 
 TRUST_GATEWAY_E2E_URL="http://127.0.0.1:${gateway_port}" \

@@ -1,8 +1,8 @@
 # syntax=docker/dockerfile:1.26
 
-ARG GO_VERSION=1.26
+ARG GO_VERSION=1.26.10
 
-FROM golang:${GO_VERSION}-bookworm@sha256:9fdc884aacc3bec89b20ffc69f4bb369c78210e3e4f600387b5128b12c199f81 AS builder
+FROM golang:${GO_VERSION}-bookworm@sha256:632dff7351799a5a9954a48dc06670ade72ee44e8c351cdc0e5a57af2fea21af AS builder
 WORKDIR /src
 ARG TARGETARCH
 COPY go.mod ./

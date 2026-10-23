@@ -113,7 +113,9 @@ make e2e
 `make e2e` builds the local gateway image, starts the gateway and pinned mock on an isolated Docker
 network, polls their health endpoints, runs one B-B/RSA signing journey, and always removes the
 containers and network. Override `TRUST_GATEWAY_E2E_GATEWAY_PORT` or
-`TRUST_GATEWAY_E2E_MOCK_PORT` if ports 18080 or 19000 are occupied.
+`TRUST_GATEWAY_E2E_MOCK_PORT` if ports 18080 or 19000 are occupied. Set
+`TRUST_GATEWAY_E2E_RESOURCE_PREFIX` to namespace concurrent verification runs; the harness removes
+only the container and network IDs created by that run.
 
 The same driver can validate a deployed gateway against real Cleverbase. It prints the first
 authorization URL; a human completes both steps in the Cleverbase app while the test polls the

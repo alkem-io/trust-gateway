@@ -1,6 +1,6 @@
 module github.com/alkem-io/trust-gateway
 
-go 1.26.1
+go 1.26.10
 
 require (
 	github.com/alkem-io/cleverbase-sdk/bindings/go v0.3.2
