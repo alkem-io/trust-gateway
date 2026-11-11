@@ -85,11 +85,13 @@ gateway_env=(
 case "${mode}" in
   mock)
     docker pull "${mock_image}" >/dev/null
-    mock_id="$(docker run --detach \
+    # Create before starting so cleanup holds the ID even when start fails (e.g. a host-port conflict).
+    mock_id="$(docker create \
       --name "${mock_name}" \
       --network "${network}" \
       --publish "127.0.0.1:${mock_port}:9000" \
       "${mock_image}")"
+    docker start "${mock_id}" >/dev/null
     wait_ready "${mock_name}" "http://127.0.0.1:${mock_port}/healthz"
     gateway_env+=(
       --env TRUST_GATEWAY_MODE=fixtures
@@ -115,7 +117,7 @@ case "${mode}" in
     ;;
 esac
 
-gateway_id="$(docker run --detach \
+gateway_id="$(docker create \
   --name "${gateway_name}" \
   --network "${network}" \
   --publish "127.0.0.1:${gateway_port}:8080" \
@@ -124,6 +126,7 @@ gateway_id="$(docker run --detach \
   --cap-drop ALL \
   "${gateway_env[@]}" \
   "${gateway_image}")"
+docker start "${gateway_id}" >/dev/null
 wait_ready "${gateway_name}" "http://127.0.0.1:${gateway_port}/readyz"
 
 TRUST_GATEWAY_E2E_URL="http://127.0.0.1:${gateway_port}" \
